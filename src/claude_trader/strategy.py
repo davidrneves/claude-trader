@@ -4,11 +4,11 @@ Simple strategy: buy when price crosses above EMA with positive sentiment,
 sell when price crosses below EMA or trailing stop hit. Fewer trades = better.
 """
 
-from decimal import Decimal
+from datetime import date
 
 import structlog
 
-from claude_trader.analyst import AnalysisResult, Signal
+from claude_trader.analyst import MultiAgentAnalysis
 
 log = structlog.get_logger()
 
@@ -32,17 +32,25 @@ class EMAMomentumStrategy:
 
     def __init__(self, ema_period: int = 20) -> None:
         self.ema_period = ema_period
-        self._daily_trades: dict[str, int] = {}  # symbol -> trade count today
+        self._daily_trades: dict[str, int] = {}
+        self._last_reset_date: date = date.today()
+
+    def _ensure_daily_reset(self) -> None:
+        """Auto-reset trade counters when the date changes."""
+        today = date.today()
+        if today != self._last_reset_date:
+            self._daily_trades.clear()
+            self._last_reset_date = today
 
     def should_buy(
         self,
         symbol: str,
         current_price: float,
         prices: list[float],
-        analysis: AnalysisResult | None = None,
+        analysis: MultiAgentAnalysis | None = None,
     ) -> bool:
         """Determine if we should buy this symbol."""
-        # Max 1 trade per symbol per day
+        self._ensure_daily_reset()
         if self._daily_trades.get(symbol, 0) >= 1:
             log.info("strategy_skip_daily_limit", symbol=symbol)
             return False
@@ -70,7 +78,11 @@ class EMAMomentumStrategy:
 
         # Require positive sentiment from analysis
         if analysis and analysis.combined_score < 0.1:
-            log.info("strategy_skip_low_sentiment", symbol=symbol, score=analysis.combined_score)
+            log.info(
+                "strategy_skip_low_sentiment",
+                symbol=symbol,
+                score=analysis.combined_score,
+            )
             return False
 
         log.info(
@@ -98,7 +110,12 @@ class EMAMomentumStrategy:
         price_below_ema = current_price < current_ema
 
         if price_below_ema:
-            log.info("strategy_sell_signal", symbol=symbol, price=current_price, ema=round(current_ema, 2))
+            log.info(
+                "strategy_sell_signal",
+                symbol=symbol,
+                price=current_price,
+                ema=round(current_ema, 2),
+            )
             return True
 
         return False

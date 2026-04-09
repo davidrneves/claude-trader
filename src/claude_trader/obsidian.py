@@ -5,21 +5,18 @@ to the research knowledge graph.
 """
 
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 
 import structlog
 
 log = structlog.get_logger()
 
-VAULT_BASE = Path.home() / "Obsidian" / "1. Projects" / "claude-trader" / "logs"
-
 
 class ObsidianLogger:
     """Writes daily trade logs to the Obsidian vault."""
 
-    def __init__(self, vault_path: Path | None = None) -> None:
-        self._base = vault_path or VAULT_BASE
+    def __init__(self, vault_path: Path) -> None:
+        self._base = vault_path
         self._base.mkdir(parents=True, exist_ok=True)
 
     def _today_path(self) -> Path:

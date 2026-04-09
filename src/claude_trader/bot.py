@@ -1,6 +1,6 @@
 """Main bot orchestrator - the trading loop.
 
-Multi-agent pipeline with Phase 4 integrations:
+Multi-agent pipeline:
 1. Check market hours
 2. Risk pre-check (circuit breakers, daily loss)
 3. For each watchlist symbol:
@@ -15,12 +15,13 @@ Multi-agent pipeline with Phase 4 integrations:
 
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 import structlog
+from alpaca.data.timeframe import TimeFrame
 
-from claude_trader.analyst import Analyst, Signal
+from claude_trader.analyst import Analyst, MultiAgentAnalysis, Signal
 from claude_trader.config import Settings
+from claude_trader.constants import ET, MARKET_CLOSE, MARKET_OPEN
 from claude_trader.executor import AlpacaExecutor
 from claude_trader.logger import TradeLogger
 from claude_trader.news import NewsFeed
@@ -31,10 +32,6 @@ from claude_trader.strategy import EMAMomentumStrategy
 
 log = structlog.get_logger()
 
-ET = ZoneInfo("America/New_York")
-MARKET_OPEN = time(9, 30)
-MARKET_CLOSE = time(16, 0)
-
 
 class TradingBot:
     """Orchestrates the full multi-agent trading pipeline."""
@@ -42,22 +39,16 @@ class TradingBot:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-        risk_config = RiskConfig(
-            max_position_pct=settings.max_position_pct,
-            stop_loss_pct=settings.stop_loss_pct,
-            trailing_stop_pct=settings.trailing_stop_pct,
-            max_daily_loss_pct=settings.max_daily_loss_pct,
-            max_drawdown_pct=settings.max_drawdown_pct,
-            max_consecutive_losses=settings.max_consecutive_losses,
-            max_open_positions=settings.max_open_positions,
-        )
+        risk_config = RiskConfig.from_settings(settings)
 
         self._risk = RiskManager(risk_config, portfolio_value=Decimal("0"))
         self._executor = AlpacaExecutor(settings, self._risk)
         self._analyst = Analyst(api_key=settings.gemini_api_key)
         self._strategy = EMAMomentumStrategy(ema_period=settings.ema_period)
         self._logger = TradeLogger(settings.trades_log_path)
-        self._news = NewsFeed(api_key=settings.alpaca_api_key, secret_key=settings.alpaca_secret_key)
+        self._news = NewsFeed(
+            api_key=settings.alpaca_api_key, secret_key=settings.alpaca_secret_key
+        )
         self._telegram = TelegramNotifier(
             bot_token=settings.telegram_bot_token,
             chat_id=settings.telegram_chat_id,
@@ -83,8 +74,6 @@ class TradingBot:
         )
 
     def _get_price_bars(self, symbol: str) -> tuple[list[float], list[dict]]:
-        from alpaca.data.timeframe import TimeFrame
-
         bars = self._executor.get_bars(
             symbol,
             TimeFrame.Day,
@@ -95,37 +84,27 @@ class TradingBot:
 
         df = bars.df
         closes = df["close"].tolist()
-        ohlcv = [
-            {"date": str(d), "open": o, "high": h, "low": l, "close": c, "volume": v}
-            for d, o, h, l, c, v in zip(
-                df.index.tolist()[-30:], df["open"].tolist()[-30:], df["high"].tolist()[-30:],
-                df["low"].tolist()[-30:], df["close"].tolist()[-30:], df["volume"].tolist()[-30:],
-            )
-        ]
+        ohlcv = self._extract_ohlcv(df)
         return closes, ohlcv
 
-    def run_once(self) -> dict:
-        """Execute one trading cycle with multi-agent analysis."""
-        summary = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "actions": [],
-            "analyses": [],
-            "trades": [],
-        }
+    @staticmethod
+    def _extract_ohlcv(df, window: int = 30) -> list[dict]:
+        """Extract recent OHLCV data from a DataFrame."""
+        recent = df.iloc[-window:]
+        return [
+            {
+                "date": str(idx),
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row["volume"],
+            }
+            for idx, row in recent.iterrows()
+        ]
 
-        # 1. Market hours check
-        if not self._is_market_open():
-            log.info("market_closed")
-            summary["actions"].append("market_closed")
-            return summary
-
-        market_time = self._get_market_time()
-
-        # 2. Update portfolio and risk state
-        self._update_portfolio()
-
-        # 3. Check existing positions for sell signals
-        positions = self._executor.get_positions()
+    def _scan_and_execute_sells(self, summary: dict, positions: list[dict]) -> None:
+        """Check existing positions for sell signals and execute."""
         for pos in positions:
             symbol = pos["symbol"]
             current_price = float(pos["current_price"])
@@ -140,91 +119,136 @@ class TradingBot:
                     self._risk.record_trade_result(profit=pnl * pos["qty"])
                     self._risk.record_daily_pnl(pnl * pos["qty"])
                     trade_info = {
-                        "symbol": symbol, "side": "sell", "qty": pos["qty"],
-                        "price": current_price, "rationale": "EMA crossover below",
+                        "symbol": symbol,
+                        "side": "sell",
+                        "qty": pos["qty"],
+                        "price": current_price,
+                        "rationale": "EMA crossover below",
                     }
                     self._logger.log_trade(**trade_info, order_id=result["order_id"])
                     self._telegram.trade_alert(**trade_info)
                     summary["actions"].append(f"sold {pos['qty']} {symbol}")
                     summary["trades"].append(trade_info)
 
-        # 4. Scan watchlist for buy signals with multi-agent analysis
+    def _analyze_symbol(
+        self, symbol: str, ohlcv: list[dict]
+    ) -> MultiAgentAnalysis | None:
+        """Run multi-agent analysis pipeline for a symbol. Returns None if no API key."""
+        if not self._settings.gemini_api_key:
+            return None
+
+        headlines = self._news.get_headlines(symbol, limit=10)
+        return self._analyst.full_analysis(
+            symbol=symbol,
+            headlines=headlines,
+            prices=ohlcv,
+        )
+
+    def _scan_and_execute_buys(
+        self, summary: dict, positions: list[dict], market_time: time
+    ) -> None:
+        """Scan watchlist for buy signals with multi-agent analysis."""
+        held_symbols = {p["symbol"] for p in positions}
+
         for symbol in self._settings.watchlist:
-            if any(p["symbol"] == symbol for p in positions):
+            if symbol in held_symbols:
                 continue
-
             try:
-                closes, ohlcv = self._get_price_bars(symbol)
-                if not closes:
-                    continue
-
-                current_price = closes[-1]
-                analysis = None
-
-                # Run full multi-agent pipeline if Gemini key available
-                if self._settings.gemini_api_key:
-                    headlines = self._news.get_headlines(symbol, limit=10)
-                    analysis = self._analyst.full_analysis(
-                        symbol=symbol,
-                        headlines=headlines,
-                        prices=ohlcv,
-                    )
-                    summary["analyses"].append({
-                        "symbol": symbol,
-                        "signal": analysis.final_signal.value,
-                        "score": analysis.combined_score,
-                        "agreement": analysis.agreement_count,
-                        "contrarian": analysis.contrarian_signal,
-                    })
-
-                    if analysis.final_signal == Signal.HOLD:
-                        log.info("multi_agent_hold", symbol=symbol, agreement=analysis.agreement_count)
-                        continue
-
-                # EMA crossover + agent confirmation
-                if self._strategy.should_buy(symbol, current_price, closes, analysis):
-                    result = self._executor.buy(
-                        symbol=symbol,
-                        price=Decimal(str(current_price)),
-                        market_time=market_time,
-                    )
-                    if result:
-                        self._strategy.record_trade(symbol)
-                        agent_scores = {}
-                        if analysis:
-                            agent_scores = {
-                                "combined": analysis.combined_score,
-                                "sentiment": analysis.sentiment.score if analysis.sentiment else None,
-                                "technical": analysis.technical.score if analysis.technical else None,
-                                "fundamental": analysis.fundamental.score if analysis.fundamental else None,
-                                "debate_bull": analysis.debate.bull_score if analysis.debate else None,
-                                "debate_bear": analysis.debate.bear_score if analysis.debate else None,
-                                "agreement": analysis.agreement_count,
-                                "contrarian": analysis.contrarian_signal,
-                            }
-                        trade_info = {
-                            "symbol": symbol, "side": "buy", "qty": result["qty"],
-                            "price": current_price,
-                            "rationale": analysis.reasoning if analysis else "EMA crossover (no analysis)",
-                        }
-                        self._logger.log_trade(**trade_info, agent_scores=agent_scores, order_id=result["order_id"])
-                        self._telegram.trade_alert(**trade_info, agent_scores=agent_scores)
-                        summary["actions"].append(f"bought {result['qty']} {symbol}")
-                        summary["trades"].append(trade_info)
-
+                self._process_buy_candidate(symbol, summary, market_time)
+            except ConnectionError as e:
+                log.error("api_connection_error", symbol=symbol, error=str(e))
+            except ValueError as e:
+                log.error("data_error", symbol=symbol, error=str(e))
             except Exception as e:
-                log.error("symbol_scan_error", symbol=symbol, error=str(e))
+                log.error(
+                    "symbol_scan_error",
+                    symbol=symbol,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
 
-        if not summary["actions"]:
-            summary["actions"].append("no_signals")
+    def _process_buy_candidate(
+        self, symbol: str, summary: dict, market_time: time
+    ) -> None:
+        """Evaluate a single symbol for buy opportunity."""
+        closes, ohlcv = self._get_price_bars(symbol)
+        if not closes:
+            return
 
-        # 5. Write Obsidian daily log
+        current_price = closes[-1]
+        analysis = self._analyze_symbol(symbol, ohlcv)
+
+        if analysis:
+            summary["analyses"].append(
+                {
+                    "symbol": symbol,
+                    "signal": analysis.final_signal.value,
+                    "score": analysis.combined_score,
+                    "agreement": analysis.agreement_count,
+                    "contrarian": analysis.contrarian_signal,
+                }
+            )
+            if analysis.final_signal == Signal.HOLD:
+                log.info(
+                    "multi_agent_hold",
+                    symbol=symbol,
+                    agreement=analysis.agreement_count,
+                )
+                return
+
+        if not self._strategy.should_buy(symbol, current_price, closes, analysis):
+            return
+
+        result = self._executor.buy(
+            symbol=symbol,
+            price=Decimal(str(current_price)),
+            market_time=market_time,
+        )
+        if not result:
+            return
+
+        self._strategy.record_trade(symbol)
+        agent_scores = self._extract_agent_scores(analysis)
+        trade_info = {
+            "symbol": symbol,
+            "side": "buy",
+            "qty": result["qty"],
+            "price": current_price,
+            "rationale": analysis.reasoning
+            if analysis
+            else "EMA crossover (no analysis)",
+        }
+        self._logger.log_trade(
+            **trade_info, agent_scores=agent_scores, order_id=result["order_id"]
+        )
+        self._telegram.trade_alert(**trade_info, agent_scores=agent_scores)
+        summary["actions"].append(f"bought {result['qty']} {symbol}")
+        summary["trades"].append(trade_info)
+
+    @staticmethod
+    def _extract_agent_scores(analysis: MultiAgentAnalysis | None) -> dict:
+        """Extract agent scores dict from analysis result."""
+        if not analysis:
+            return {}
+        return {
+            "combined": analysis.combined_score,
+            "sentiment": analysis.sentiment.score if analysis.sentiment else None,
+            "technical": analysis.technical.score if analysis.technical else None,
+            "fundamental": analysis.fundamental.score if analysis.fundamental else None,
+            "debate_bull": analysis.debate.bull_score if analysis.debate else None,
+            "debate_bear": analysis.debate.bear_score if analysis.debate else None,
+            "agreement": analysis.agreement_count,
+            "contrarian": analysis.contrarian_signal,
+        }
+
+    def _write_cycle_log(self, summary: dict) -> None:
+        """Write Obsidian daily log (best-effort)."""
         try:
             account = self._executor.get_account()
             self._obsidian.write_daily_log(
                 equity=str(account["equity"]),
                 cash=str(account["cash"]),
-                daily_pnl="0",  # TODO: track cumulative daily P&L
+                daily_pnl="0",
                 positions=self._executor.get_positions(),
                 trades=summary["trades"],
                 analyses=summary["analyses"],
@@ -232,7 +256,36 @@ class TradingBot:
         except Exception as e:
             log.warning("obsidian_log_failed", error=str(e))
 
-        log.info("cycle_complete", actions=summary["actions"], analyses_count=len(summary["analyses"]))
+    def run_once(self) -> dict:
+        """Execute one trading cycle with multi-agent analysis."""
+        summary = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "actions": [],
+            "analyses": [],
+            "trades": [],
+        }
+
+        if not self._is_market_open():
+            log.info("market_closed")
+            summary["actions"].append("market_closed")
+            return summary
+
+        market_time = self._get_market_time()
+        self._update_portfolio()
+
+        positions = self._executor.get_positions()
+        self._scan_and_execute_sells(summary, positions)
+        self._scan_and_execute_buys(summary, positions, market_time)
+
+        if not summary["actions"]:
+            summary["actions"].append("no_signals")
+
+        self._write_cycle_log(summary)
+        log.info(
+            "cycle_complete",
+            actions=summary["actions"],
+            analyses_count=len(summary["analyses"]),
+        )
         return summary
 
     def run_daily_summary(self) -> None:

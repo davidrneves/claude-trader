@@ -21,15 +21,6 @@ class TelegramNotifier:
             log.debug("telegram_disabled", message=text[:50])
             return
         try:
-            asyncio.get_event_loop().run_until_complete(
-                self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=text,
-                    parse_mode="Markdown",
-                )
-            )
-        except RuntimeError:
-            # No event loop running, create one
             asyncio.run(
                 self._bot.send_message(
                     chat_id=self._chat_id,
@@ -65,10 +56,13 @@ Rationale: {rationale}"""
         trades_count: int,
         positions: list[dict],
     ) -> None:
-        pos_text = "\n".join(
-            f"  {p['symbol']}: {p['qty']} @ ${p['avg_entry']} (P&L: ${p['unrealized_pnl']})"
-            for p in positions
-        ) or "  None"
+        pos_text = (
+            "\n".join(
+                f"  {p['symbol']}: {p['qty']} @ ${p['avg_entry']} (P&L: ${p['unrealized_pnl']})"
+                for p in positions
+            )
+            or "  None"
+        )
 
         msg = f"""📊 *Daily Summary - {date}*
 Equity: ${equity}
@@ -78,9 +72,3 @@ Trades today: {trades_count}
 *Positions:*
 {pos_text}"""
         self._send(msg)
-
-    def circuit_breaker(self, reason: str) -> None:
-        self._send(f"🚨 *CIRCUIT BREAKER ACTIVATED*\n{reason}")
-
-    def risk_alert(self, message: str) -> None:
-        self._send(f"⚠️ *Risk Alert*\n{message}")

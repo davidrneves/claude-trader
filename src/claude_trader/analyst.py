@@ -11,7 +11,9 @@ Research finding: contrarian sentiment often outperforms naive following.
 """
 
 import json
+from collections.abc import Callable
 from enum import Enum
+from typing import TypeVar
 
 import structlog
 from google import genai
@@ -20,6 +22,16 @@ from pydantic import BaseModel, Field
 log = structlog.get_logger()
 
 ANALYSIS_MODEL = "gemini-3-flash-preview"
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class GeminiError(Exception):
+    """Base exception for Gemini API errors."""
+
+
+class GeminiParseError(GeminiError):
+    """Gemini returned a response that couldn't be parsed as JSON."""
 
 
 class Signal(str, Enum):
@@ -74,12 +86,10 @@ class MultiAgentAnalysis(BaseModel):
     combined_score: float = Field(ge=-1.0, le=1.0)
     final_signal: Signal
     agreement_count: int = Field(description="How many agents agree on direction")
-    contrarian_signal: bool = Field(default=False, description="True if contrarian filter triggered")
+    contrarian_signal: bool = Field(
+        default=False, description="True if contrarian filter triggered"
+    )
     reasoning: str
-
-
-# Backward compatibility
-AnalysisResult = MultiAgentAnalysis
 
 
 # --- Signal Aggregator ---
@@ -130,7 +140,12 @@ class SignalAggregator:
         contrarian = sentiment.score < -0.3 and technical.score > 0.3
         if contrarian:
             combined = combined + 0.15
-            log.info("contrarian_signal", symbol=symbol, sentiment=sentiment.score, technical=technical.score)
+            log.info(
+                "contrarian_signal",
+                symbol=symbol,
+                sentiment=sentiment.score,
+                technical=technical.score,
+            )
 
         combined = max(-1.0, min(1.0, combined))
 
@@ -143,7 +158,13 @@ class SignalAggregator:
         buy_count = directions.count("buy")
         sell_count = directions.count("sell")
         agreement_count = max(buy_count, sell_count)
-        majority_direction = "buy" if buy_count > sell_count else "sell" if sell_count > buy_count else "neutral"
+        majority_direction = (
+            "buy"
+            if buy_count > sell_count
+            else "sell"
+            if sell_count > buy_count
+            else "neutral"
+        )
 
         if agreement_count >= self.min_agreement and majority_direction == "buy":
             final_signal = Signal.STRONG_BUY if combined >= 0.5 else Signal.BUY
@@ -160,7 +181,9 @@ class SignalAggregator:
             f"Agreement: {agreement_count}/{len(directions)} {majority_direction}",
         ]
         if contrarian:
-            reasoning_parts.append("CONTRARIAN: negative sentiment + positive technical")
+            reasoning_parts.append(
+                "CONTRARIAN: negative sentiment + positive technical"
+            )
 
         return MultiAgentAnalysis(
             symbol=symbol,
@@ -179,8 +202,11 @@ class SignalAggregator:
 # --- Gemini-Powered Agents ---
 
 
-def _call_gemini(client: genai.Client, prompt: str) -> dict | None:
-    """Make a Gemini API call and parse JSON response."""
+def _call_gemini(client: genai.Client, prompt: str) -> dict:
+    """Make a Gemini API call and parse JSON response.
+
+    Raises GeminiError or GeminiParseError on failure.
+    """
     try:
         response = client.models.generate_content(
             model=ANALYSIS_MODEL,
@@ -191,10 +217,12 @@ def _call_gemini(client: genai.Client, prompt: str) -> dict | None:
                 temperature=0.2,
             ),
         )
-        return json.loads(response.text)
     except Exception as e:
-        log.warning("gemini_call_failed", error=str(e))
-        return None
+        raise GeminiError(f"API call failed: {e}") from e
+    try:
+        return json.loads(response.text)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise GeminiParseError(f"Failed to parse response: {e}") from e
 
 
 class Analyst:
@@ -204,12 +232,41 @@ class Analyst:
         self._client = genai.Client(api_key=api_key) if api_key else None
         self._aggregator = SignalAggregator()
 
+    def _analyze_with_fallback(
+        self,
+        symbol: str,
+        prompt_fn: Callable[[], str],
+        result_cls: type[T],
+        fallback_kwargs: dict,
+        log_prefix: str,
+    ) -> T:
+        """Run a Gemini analysis with consistent error handling and fallback."""
+        if not self._client:
+            return result_cls(**fallback_kwargs)
+
+        try:
+            data = _call_gemini(self._client, prompt_fn())
+            return result_cls(**data)
+        except (GeminiError, GeminiParseError) as e:
+            log.warning(f"{log_prefix}_api_failed", symbol=symbol, error=str(e))
+        except Exception as e:
+            log.warning(f"{log_prefix}_parse_failed", symbol=symbol, error=str(e))
+        return result_cls(**fallback_kwargs)
+
     def analyze_sentiment(self, symbol: str, headlines: list[str]) -> SentimentResult:
-        if not self._client or not headlines:
-            return SentimentResult(score=0.0, signal=Signal.HOLD, reasoning="No data available", key_factors=[])
+        fallback = {
+            "score": 0.0,
+            "signal": Signal.HOLD,
+            "reasoning": "No data available",
+            "key_factors": [],
+        }
+        if not headlines:
+            return SentimentResult(**fallback)
 
         headlines_text = "\n".join(f"- {h}" for h in headlines[:20])
-        data = _call_gemini(self._client, f"""Analyze the sentiment of these news headlines for {symbol}.
+
+        def prompt() -> str:
+            return f"""Analyze the sentiment of these news headlines for {symbol}.
 
 Headlines:
 {headlines_text}
@@ -221,25 +278,29 @@ Return a JSON object with these exact fields:
 - "score": float between -1.0 (very bearish) and 1.0 (very bullish)
 - "signal": one of "strong_buy", "buy", "hold", "sell", "strong_sell"
 - "reasoning": brief explanation (1-2 sentences)
-- "key_factors": list of 2-3 key factors driving the sentiment""")
+- "key_factors": list of 2-3 key factors driving the sentiment"""
 
-        if data:
-            try:
-                return SentimentResult(**data)
-            except Exception as e:
-                log.warning("sentiment_parse_failed", symbol=symbol, error=str(e))
-        return SentimentResult(score=0.0, signal=Signal.HOLD, reasoning="Parse error", key_factors=[])
+        return self._analyze_with_fallback(
+            symbol, prompt, SentimentResult, fallback, "sentiment"
+        )
 
     def analyze_technical(self, symbol: str, prices: list[dict]) -> TechnicalResult:
-        if not self._client or not prices:
-            return TechnicalResult(score=0.0, signal=Signal.HOLD, pattern="no_data", reasoning="No data")
+        fallback = {
+            "score": 0.0,
+            "signal": Signal.HOLD,
+            "pattern": "no_data",
+            "reasoning": "No data",
+        }
+        if not prices:
+            return TechnicalResult(**fallback)
 
         price_text = "\n".join(
             f"  {p.get('date', 'N/A')}: O={p.get('open'):.2f} H={p.get('high'):.2f} L={p.get('low'):.2f} C={p.get('close'):.2f} V={p.get('volume', 0)}"
             for p in prices[-30:]
         )
 
-        data = _call_gemini(self._client, f"""Analyze the technical indicators for {symbol}.
+        def prompt() -> str:
+            return f"""Analyze the technical indicators for {symbol}.
 
 Recent OHLCV data:
 {price_text}
@@ -252,24 +313,23 @@ Return a JSON object:
 - "pattern": primary pattern identified (string)
 - "support_level": nearest support price (float or null)
 - "resistance_level": nearest resistance price (float or null)
-- "reasoning": 1-2 sentences""")
+- "reasoning": 1-2 sentences"""
 
-        if data:
-            try:
-                return TechnicalResult(**data)
-            except Exception as e:
-                log.warning("technical_parse_failed", symbol=symbol, error=str(e))
-        return TechnicalResult(score=0.0, signal=Signal.HOLD, pattern="parse_error", reasoning="Parse error")
+        return self._analyze_with_fallback(
+            symbol, prompt, TechnicalResult, fallback, "technical"
+        )
 
-    def analyze_fundamental(self, symbol: str, financials: dict | None = None) -> FundamentalResult:
-        if not self._client:
-            return FundamentalResult(score=0.0, signal=Signal.HOLD, reasoning="No API key")
+    def analyze_fundamental(
+        self, symbol: str, financials: dict | None = None
+    ) -> FundamentalResult:
+        fallback = {"score": 0.0, "signal": Signal.HOLD, "reasoning": "No API key"}
 
         context = ""
         if financials:
             context = f"\nFinancial data:\n{json.dumps(financials, indent=2)}"
 
-        data = _call_gemini(self._client, f"""Analyze the fundamental valuation of {symbol}.{context}
+        def prompt() -> str:
+            return f"""Analyze the fundamental valuation of {symbol}.{context}
 
 Consider: P/E ratio relative to sector, revenue growth trends, margins, debt levels.
 If no specific data is provided, use your knowledge of the company's recent financials.
@@ -279,14 +339,11 @@ Return a JSON object:
 - "signal": one of "strong_buy", "buy", "hold", "sell", "strong_sell"
 - "reasoning": 1-2 sentences
 - "pe_ratio": estimated P/E ratio (float or null)
-- "revenue_growth": estimated YoY revenue growth as decimal (float or null)""")
+- "revenue_growth": estimated YoY revenue growth as decimal (float or null)"""
 
-        if data:
-            try:
-                return FundamentalResult(**data)
-            except Exception as e:
-                log.warning("fundamental_parse_failed", symbol=symbol, error=str(e))
-        return FundamentalResult(score=0.0, signal=Signal.HOLD, reasoning="Parse error")
+        return self._analyze_with_fallback(
+            symbol, prompt, FundamentalResult, fallback, "fundamental"
+        )
 
     def run_debate(
         self,
@@ -295,18 +352,21 @@ Return a JSON object:
         technical: TechnicalResult,
         fundamental: FundamentalResult,
     ) -> DebateResult:
-        if not self._client:
-            return DebateResult(
-                bull_score=0.5, bear_score=0.5, verdict=Signal.HOLD,
-                bull_argument="No API key", bear_argument="No API key",
-            )
+        fallback = {
+            "bull_score": 0.5,
+            "bear_score": 0.5,
+            "verdict": Signal.HOLD,
+            "bull_argument": "No data",
+            "bear_argument": "No data",
+        }
 
         context = f"""Symbol: {symbol}
 Sentiment: score={sentiment.score:.2f}, signal={sentiment.signal.value}, reasoning="{sentiment.reasoning}"
 Technical: score={technical.score:.2f}, signal={technical.signal.value}, pattern="{technical.pattern}", reasoning="{technical.reasoning}"
 Fundamental: score={fundamental.score:.2f}, signal={fundamental.signal.value}, reasoning="{fundamental.reasoning}" """
 
-        data = _call_gemini(self._client, f"""You are a trading debate judge. Given the analyst reports below,
+        def prompt() -> str:
+            return f"""You are a trading debate judge. Given the analyst reports below,
 construct the strongest Bull case and the strongest Bear case for {symbol},
 then score each and render a verdict.
 
@@ -322,16 +382,10 @@ Return a JSON object:
 - "bear_score": float 0.0-1.0
 - "verdict": one of "strong_buy", "buy", "hold", "sell", "strong_sell"
 - "bull_argument": 2-3 sentence bull case
-- "bear_argument": 2-3 sentence bear case""")
+- "bear_argument": 2-3 sentence bear case"""
 
-        if data:
-            try:
-                return DebateResult(**data)
-            except Exception as e:
-                log.warning("debate_parse_failed", symbol=symbol, error=str(e))
-        return DebateResult(
-            bull_score=0.5, bear_score=0.5, verdict=Signal.HOLD,
-            bull_argument="Parse error", bear_argument="Parse error",
+        return self._analyze_with_fallback(
+            symbol, prompt, DebateResult, fallback, "debate"
         )
 
     def full_analysis(
@@ -364,35 +418,3 @@ Return a JSON object:
             contrarian=result.contrarian_signal,
         )
         return result
-
-    # Backward compatibility
-    def combine_signals(
-        self,
-        symbol: str,
-        sentiment: SentimentResult,
-        technical: TechnicalResult,
-        sentiment_weight: float = 0.4,
-        technical_weight: float = 0.6,
-    ) -> MultiAgentAnalysis:
-        combined = sentiment.score * sentiment_weight + technical.score * technical_weight
-        if combined >= 0.5:
-            signal = Signal.STRONG_BUY
-        elif combined >= 0.2:
-            signal = Signal.BUY
-        elif combined <= -0.5:
-            signal = Signal.STRONG_SELL
-        elif combined <= -0.2:
-            signal = Signal.SELL
-        else:
-            signal = Signal.HOLD
-
-        return MultiAgentAnalysis(
-            symbol=symbol,
-            sentiment=sentiment,
-            technical=technical,
-            combined_score=round(combined, 3),
-            final_signal=signal,
-            agreement_count=2 if _signal_direction(sentiment.signal) == _signal_direction(technical.signal) else 1,
-            contrarian_signal=False,
-            reasoning=f"Sentiment: {sentiment.score:.2f}, Technical: {technical.score:.2f}",
-        )

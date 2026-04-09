@@ -4,17 +4,21 @@ Research finding: Risk management is the #1 factor determining trading system
 robustness, not model intelligence. Every rule here is hard-coded logic.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import time
 from decimal import Decimal
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
-log = structlog.get_logger()
+from claude_trader.constants import MARKET_CLOSE, MARKET_OPEN
 
-MARKET_OPEN = time(9, 30)
-MARKET_CLOSE = time(16, 0)
+if TYPE_CHECKING:
+    from claude_trader.config import Settings
+
+log = structlog.get_logger()
 
 
 @dataclass
@@ -30,6 +34,19 @@ class RiskConfig:
     max_open_positions: int = 5
     banned_minutes_open: int = 15  # Minutes after open to avoid
     banned_minutes_close: int = 15  # Minutes before close to avoid
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> RiskConfig:
+        """Build RiskConfig from application Settings (single source of truth)."""
+        return cls(
+            max_position_pct=settings.max_position_pct,
+            stop_loss_pct=settings.stop_loss_pct,
+            trailing_stop_pct=settings.trailing_stop_pct,
+            max_daily_loss_pct=settings.max_daily_loss_pct,
+            max_drawdown_pct=settings.max_drawdown_pct,
+            max_consecutive_losses=settings.max_consecutive_losses,
+            max_open_positions=settings.max_open_positions,
+        )
 
 
 @dataclass
@@ -97,7 +114,9 @@ class RiskManager:
 
         # Basic validation
         if trade.qty <= 0:
-            return RiskCheckResult(approved=False, reason="Invalid quantity: must be > 0")
+            return RiskCheckResult(
+                approved=False, reason="Invalid quantity: must be > 0"
+            )
         if trade.price <= 0:
             return RiskCheckResult(approved=False, reason="Invalid price: must be > 0")
 
@@ -150,8 +169,16 @@ class RiskManager:
 
         # 5. Banned hours
         if market_time is not None:
-            open_minutes = MARKET_OPEN.hour * 60 + MARKET_OPEN.minute + self.config.banned_minutes_open
-            close_minutes = MARKET_CLOSE.hour * 60 + MARKET_CLOSE.minute - self.config.banned_minutes_close
+            open_minutes = (
+                MARKET_OPEN.hour * 60
+                + MARKET_OPEN.minute
+                + self.config.banned_minutes_open
+            )
+            close_minutes = (
+                MARKET_CLOSE.hour * 60
+                + MARKET_CLOSE.minute
+                - self.config.banned_minutes_close
+            )
             open_cutoff = time(open_minutes // 60, open_minutes % 60)
             close_cutoff = time(close_minutes // 60, close_minutes % 60)
             if market_time < open_cutoff or market_time >= close_cutoff:
@@ -163,7 +190,9 @@ class RiskManager:
                 )
         passed.append("banned_hours")
 
-        return RiskCheckResult(approved=True, reason="All checks passed", checks_passed=passed)
+        return RiskCheckResult(
+            approved=True, reason="All checks passed", checks_passed=passed
+        )
 
     def record_daily_pnl(self, pnl: Decimal) -> None:
         """Update today's P&L. Called after each trade closes."""

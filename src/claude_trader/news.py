@@ -30,7 +30,3 @@ class NewsFeed:
         except Exception as e:
             log.warning("news_fetch_failed", symbol=symbol, error=str(e))
             return []
-
-    def get_headlines_bulk(self, symbols: list[str], limit_per: int = 10) -> dict[str, list[str]]:
-        """Get headlines for multiple symbols."""
-        return {s: self.get_headlines(s, limit_per) for s in symbols}

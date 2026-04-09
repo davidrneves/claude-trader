@@ -50,16 +50,6 @@ class TradeLogger:
             f.write(json.dumps(entry, cls=DecimalEncoder) + "\n")
         log.info("trade_logged", symbol=symbol, side=side, qty=qty)
 
-    def log_risk_rejection(self, symbol: str, reason: str) -> None:
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event": "risk_rejection",
-            "symbol": symbol,
-            "reason": reason,
-        }
-        with open(self._path, "a") as f:
-            f.write(json.dumps(entry, cls=DecimalEncoder) + "\n")
-
     def get_daily_summary(self) -> dict:
         """Read today's trades and compute summary stats."""
         today = datetime.now(timezone.utc).date().isoformat()

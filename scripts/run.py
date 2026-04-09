@@ -24,7 +24,9 @@ from claude_trader.config import Settings
 
 def main():
     parser = argparse.ArgumentParser(description="Claude Trading Bot")
-    parser.add_argument("--summary", action="store_true", help="Send daily summary only")
+    parser.add_argument(
+        "--summary", action="store_true", help="Send daily summary only"
+    )
     args = parser.parse_args()
 
     log = structlog.get_logger()

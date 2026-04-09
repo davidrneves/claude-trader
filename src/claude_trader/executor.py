@@ -12,7 +12,6 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import (
     MarketOrderRequest,
     StopOrderRequest,
-    TrailingStopOrderRequest,
 )
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -65,6 +64,36 @@ class AlpacaExecutor:
             for p in positions
         ]
 
+    def _submit_market_order(self, symbol: str, qty: int, side: OrderSide):
+        """Submit a market order, return the order object."""
+        return self._client.submit_order(
+            MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                time_in_force=TimeInForce.DAY,
+            )
+        )
+
+    def set_stop_loss(self, symbol: str, qty: int, entry_price: Decimal) -> dict | None:
+        """Set a stop-loss order. Returns order info or None on failure."""
+        stop_price = round(float(self._risk.calculate_stop_loss(entry_price)), 2)
+        try:
+            stop_order = self._client.submit_order(
+                StopOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    stop_price=stop_price,
+                )
+            )
+            log.info("stop_loss_set", symbol=symbol, stop_price=stop_price)
+            return {"stop_order_id": str(stop_order.id), "stop_price": stop_price}
+        except Exception as e:
+            log.error("stop_loss_failed", symbol=symbol, error=str(e))
+            return None
+
     def buy(
         self,
         symbol: str,
@@ -86,67 +115,34 @@ class AlpacaExecutor:
             log.warning("buy_rejected_risk", symbol=symbol, reason=check.reason)
             return None
 
-        order = self._client.submit_order(
-            MarketOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-            )
-        )
+        order = self._submit_market_order(symbol, qty, OrderSide.BUY)
         log.info("buy_executed", symbol=symbol, qty=qty, order_id=str(order.id))
 
-        # Set stop-loss
-        stop_price = round(float(self._risk.calculate_stop_loss(price)), 2)
-        stop_order = self._client.submit_order(
-            StopOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                stop_price=stop_price,
-            )
-        )
-        log.info("stop_loss_set", symbol=symbol, stop_price=stop_price)
+        stop_result = self.set_stop_loss(symbol, qty, price)
+        if not stop_result:
+            log.warning("buy_without_stop_loss", symbol=symbol, qty=qty)
 
         self._risk.open_positions += 1
-        return {
+        result = {
             "order_id": str(order.id),
-            "stop_order_id": str(stop_order.id),
             "symbol": symbol,
             "qty": qty,
-            "stop_price": stop_price,
         }
+        if stop_result:
+            result["stop_order_id"] = stop_result["stop_order_id"]
+            result["stop_price"] = stop_result["stop_price"]
+        return result
 
     def sell(self, symbol: str, qty: int) -> dict | None:
         """Sell shares (market order)."""
-        order = self._client.submit_order(
-            MarketOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.DAY,
-            )
-        )
+        order = self._submit_market_order(symbol, qty, OrderSide.SELL)
         log.info("sell_executed", symbol=symbol, qty=qty, order_id=str(order.id))
         self._risk.open_positions = max(0, self._risk.open_positions - 1)
         return {"order_id": str(order.id), "symbol": symbol, "qty": qty}
 
-    def set_trailing_stop(self, symbol: str, qty: int, trail_pct: float) -> dict | None:
-        """Set a trailing stop order."""
-        order = self._client.submit_order(
-            TrailingStopOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                trail_percent=trail_pct * 100,
-            )
-        )
-        log.info("trailing_stop_set", symbol=symbol, trail_pct=trail_pct)
-        return {"order_id": str(order.id), "symbol": symbol, "trail_pct": trail_pct}
-
-    def get_bars(self, symbol: str, timeframe: TimeFrame, start: str, end: str | None = None):
+    def get_bars(
+        self, symbol: str, timeframe: TimeFrame, start: str, end: str | None = None
+    ):
         """Get historical price bars for analysis."""
         request = StockBarsRequest(
             symbol_or_symbols=symbol,

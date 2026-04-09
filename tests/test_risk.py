@@ -38,7 +38,9 @@ class TestPositionSizing:
         assert qty == 1
 
     def test_position_size_expensive_stock(self, risk_manager):
-        qty = risk_manager.calculate_position_size(symbol="BRK.A", price=Decimal("500000"))
+        qty = risk_manager.calculate_position_size(
+            symbol="BRK.A", price=Decimal("500000")
+        )
         assert qty == 0
 
     def test_position_size_cheap_stock(self, risk_manager):
