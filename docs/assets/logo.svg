@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <rect width="120" height="120" rx="24" fill="#1a1a2e"/>
+  <path d="M30 75 L45 45 L60 65 L75 35 L90 55" stroke="#4ade80" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="90" cy="55" r="4" fill="#4ade80"/>
+  <text x="60" y="105" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="#94a3b8">CT</text>
+</svg>
