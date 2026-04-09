@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 log = structlog.get_logger()
 
-ANALYSIS_MODEL = "gemini-3.0-flash"
+ANALYSIS_MODEL = "gemini-3-flash-preview"
 
 
 class Signal(str, Enum):
