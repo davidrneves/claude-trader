@@ -27,6 +27,7 @@ from claude_trader.logger import TradeLogger
 from claude_trader.news import NewsFeed
 from claude_trader.notifier import TelegramNotifier
 from claude_trader.obsidian import ObsidianLogger
+from claude_trader.performance import PerformanceTracker
 from claude_trader.risk import RiskConfig, RiskManager
 from claude_trader.strategy import EMAMomentumStrategy
 
@@ -54,6 +55,7 @@ class TradingBot:
             chat_id=settings.telegram_chat_id,
         )
         self._obsidian = ObsidianLogger(vault_path=settings.obsidian_log_path)
+        self._performance = PerformanceTracker(settings.snapshots_path)
 
     def _get_market_time(self) -> time:
         return datetime.now(ET).time()
@@ -241,20 +243,35 @@ class TradingBot:
             "contrarian": analysis.contrarian_signal,
         }
 
-    def _write_cycle_log(self, summary: dict) -> None:
-        """Write Obsidian daily log (best-effort)."""
+    def _record_snapshot_and_log(self, summary: dict) -> None:
+        """Record performance snapshot and write Obsidian daily log."""
         try:
             account = self._executor.get_account()
+            trades_today = self._logger.get_daily_summary()
+
+            snapshot = self._performance.record_snapshot(
+                account=account,
+                trades_today=trades_today,
+                risk_state={
+                    "open_positions": self._risk.open_positions,
+                    "consecutive_losses": self._risk._consecutive_losses,
+                    "circuit_breaker_triggered": (
+                        self._risk._consecutive_losses
+                        >= self._risk.config.max_consecutive_losses
+                    ),
+                },
+            )
+
             self._obsidian.write_daily_log(
                 equity=str(account["equity"]),
                 cash=str(account["cash"]),
-                daily_pnl="0",
+                daily_pnl=snapshot.daily_pnl,
                 positions=self._executor.get_positions(),
                 trades=summary["trades"],
                 analyses=summary["analyses"],
             )
         except Exception as e:
-            log.warning("obsidian_log_failed", error=str(e))
+            log.warning("snapshot_or_log_failed", error=str(e))
 
     def run_once(self) -> dict:
         """Execute one trading cycle with multi-agent analysis."""
@@ -280,7 +297,7 @@ class TradingBot:
         if not summary["actions"]:
             summary["actions"].append("no_signals")
 
-        self._write_cycle_log(summary)
+        self._record_snapshot_and_log(summary)
         log.info(
             "cycle_complete",
             actions=summary["actions"],
@@ -293,11 +310,12 @@ class TradingBot:
         account = self._executor.get_account()
         positions = self._executor.get_positions()
         daily_log = self._logger.get_daily_summary()
+        daily_pnl = self._performance.get_daily_pnl()
 
         self._telegram.daily_summary(
             date=datetime.now(ET).strftime("%Y-%m-%d"),
             equity=str(account["equity"]),
-            daily_pnl="0",
+            daily_pnl=daily_pnl,
             trades_count=daily_log["total_trades"],
             positions=positions,
         )

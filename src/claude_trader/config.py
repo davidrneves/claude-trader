@@ -86,3 +86,4 @@ class Settings(BaseSettings):
     # --- Logging ---
     log_level: str = Field(default="INFO")
     trades_log_path: Path = Field(default=Path("trades.jsonl"))
+    snapshots_path: Path = Field(default=Path("snapshots.jsonl"))

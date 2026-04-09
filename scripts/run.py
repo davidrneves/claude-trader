@@ -2,8 +2,9 @@
 """Entry point for the Claude Trading Bot.
 
 Usage:
-  uv run python scripts/run.py           # Single trading cycle
-  uv run python scripts/run.py --summary # End-of-day summary only
+  uv run python scripts/run.py              # Single trading cycle
+  uv run python scripts/run.py --summary    # End-of-day summary only
+  uv run python scripts/run.py --graduation # Check graduation criteria
 """
 
 import argparse
@@ -26,6 +27,9 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Trading Bot")
     parser.add_argument(
         "--summary", action="store_true", help="Send daily summary only"
+    )
+    parser.add_argument(
+        "--graduation", action="store_true", help="Check graduation criteria"
     )
     args = parser.parse_args()
 
@@ -54,7 +58,14 @@ def main():
 
     bot = TradingBot(settings)
 
-    if args.summary:
+    if args.graduation:
+        from scripts.graduation import print_graduation
+
+        from claude_trader.performance import PerformanceTracker
+
+        tracker = PerformanceTracker(settings.snapshots_path)
+        print_graduation(tracker)
+    elif args.summary:
         bot.run_daily_summary()
     else:
         summary = bot.run_once()

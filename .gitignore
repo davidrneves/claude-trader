@@ -15,6 +15,7 @@ wheels/
 
 # Trading logs
 trades.jsonl
+snapshots.jsonl
 
 # Python
 __pycache__/
