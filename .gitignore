@@ -21,3 +21,7 @@ snapshots.jsonl
 __pycache__/
 *.pyc
 .venv/
+
+# MemPalace
+entities.json
+mempalace.yaml
