@@ -12,16 +12,42 @@ to evaluate the 6 graduation criteria before going live:
 
 import json
 import math
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import TypedDict
 
 import structlog
 
 from claude_trader.logger import DecimalEncoder
 
 log = structlog.get_logger()
+
+# Graduation thresholds (match CLAUDE.md)
+MIN_TRADING_DAYS = 30
+MIN_SHARPE_RATIO = 0.5
+MAX_DRAWDOWN_PCT = 10.0
+
+
+class AccountSnapshot(TypedDict):
+    equity: str
+    cash: str
+    portfolio_value: str
+
+
+class TradesSummary(TypedDict):
+    total_trades: int
+    buys: int
+    sells: int
+
+
+class RiskState(TypedDict):
+    open_positions: int
+    consecutive_losses: int
+    circuit_breaker_triggered: bool
 
 
 @dataclass
@@ -30,16 +56,10 @@ class DailySnapshot:
 
     date: str
     equity: str
-    cash: str
-    portfolio_value: str
     daily_pnl: str
     cumulative_return_pct: float
-    positions_count: int
     trades_count: int
-    buys: int
-    sells: int
     max_drawdown_pct: float
-    consecutive_losses: int
     circuit_breaker_triggered: bool
 
 
@@ -74,7 +94,6 @@ class PerformanceMetrics:
     max_drawdown_pct: float
     circuit_breaker_days_last_7: int
     total_trades: int
-    win_rate: float | None
     first_date: str
     last_date: str
 
@@ -91,30 +110,23 @@ class PerformanceTracker:
 
     def record_snapshot(
         self,
-        account: dict,
-        trades_today: dict,
-        risk_state: dict,
+        account: AccountSnapshot,
+        trades_today: TradesSummary,
+        risk_state: RiskState,
     ) -> DailySnapshot:
         """Append a daily snapshot. Call once per trading day after the last cycle."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        # Compute cumulative return from first snapshot
+        today = self._today()
         snapshots = self._read_snapshots()
-        first_equity = Decimal(snapshots[0]["equity"]) if snapshots else None
         current_equity = Decimal(str(account["equity"]))
 
-        if first_equity and first_equity > 0:
-            cumulative_return = float(
-                (current_equity - first_equity) / first_equity * 100
-            )
-        else:
-            cumulative_return = 0.0
+        first_equity = float(snapshots[0]["equity"]) if snapshots else None
+        cumulative_return = self._compute_cumulative_return(
+            first_equity, float(current_equity)
+        )
 
-        # Compute max drawdown from full equity curve
         equities = [float(s["equity"]) for s in snapshots] + [float(current_equity)]
         max_dd = self._compute_max_drawdown(equities)
 
-        # Compute daily P&L from previous snapshot
         if snapshots:
             prev_equity = Decimal(snapshots[-1]["equity"])
             daily_pnl = str(current_equity - prev_equity)
@@ -124,34 +136,18 @@ class PerformanceTracker:
         snapshot = DailySnapshot(
             date=today,
             equity=str(current_equity),
-            cash=str(account["cash"]),
-            portfolio_value=str(account["portfolio_value"]),
             daily_pnl=daily_pnl,
             cumulative_return_pct=round(cumulative_return, 4),
-            positions_count=risk_state.get("open_positions", 0),
             trades_count=trades_today.get("total_trades", 0),
-            buys=trades_today.get("buys", 0),
-            sells=trades_today.get("sells", 0),
             max_drawdown_pct=round(max_dd, 4),
-            consecutive_losses=risk_state.get("consecutive_losses", 0),
             circuit_breaker_triggered=risk_state.get(
                 "circuit_breaker_triggered", False
             ),
         )
 
-        # Deduplicate: overwrite if same date already exists
-        updated = False
-        new_snapshots = []
-        for s in snapshots:
-            if s["date"] == today:
-                new_snapshots.append(asdict(snapshot))
-                updated = True
-            else:
-                new_snapshots.append(s)
-        if not updated:
-            new_snapshots.append(asdict(snapshot))
-
+        new_snapshots = self._deduplicate_snapshots(snapshots, today, asdict(snapshot))
         self._write_snapshots(new_snapshots)
+
         log.info(
             "snapshot_recorded",
             date=today,
@@ -173,29 +169,13 @@ class PerformanceTracker:
             if equities[i - 1] > 0:
                 daily_returns.append((equities[i] - equities[i - 1]) / equities[i - 1])
 
-        # Sharpe ratio (annualized, assuming 252 trading days)
-        sharpe = None
-        if len(daily_returns) >= 2:
-            mean_ret = sum(daily_returns) / len(daily_returns)
-            std_ret = math.sqrt(
-                sum((r - mean_ret) ** 2 for r in daily_returns)
-                / (len(daily_returns) - 1)
-            )
-            if std_ret > 0:
-                sharpe = round((mean_ret / std_ret) * math.sqrt(252), 3)
-
-        # Max drawdown
+        sharpe = self._compute_sharpe(daily_returns)
         max_dd = self._compute_max_drawdown(equities)
 
-        # Circuit breaker in last 7 days
         recent = snapshots[-7:] if len(snapshots) >= 7 else snapshots
         cb_days = sum(1 for s in recent if s.get("circuit_breaker_triggered", False))
 
-        # Cumulative return
-        first_eq = equities[0]
-        last_eq = equities[-1]
-        cum_return = ((last_eq - first_eq) / first_eq * 100) if first_eq > 0 else 0.0
-
+        cum_return = self._compute_cumulative_return(equities[0], equities[-1])
         total_trades = sum(s.get("trades_count", 0) for s in snapshots)
 
         return PerformanceMetrics(
@@ -205,7 +185,6 @@ class PerformanceTracker:
             max_drawdown_pct=round(max_dd, 4),
             circuit_breaker_days_last_7=cb_days,
             total_trades=total_trades,
-            win_rate=None,
             first_date=snapshots[0]["date"],
             last_date=snapshots[-1]["date"],
         )
@@ -215,16 +194,18 @@ class PerformanceTracker:
         metrics = self.get_metrics()
 
         if not metrics:
+            criteria_defs = [
+                ("Paper trading days", f">= {MIN_TRADING_DAYS}", "0"),
+                ("Cumulative return", "> 0%", "N/A"),
+                ("Sharpe ratio", f"> {MIN_SHARPE_RATIO}", "N/A"),
+                ("Max drawdown", f"< {MAX_DRAWDOWN_PCT}%", "N/A"),
+                ("No circuit breaker (7d)", "0 days", "N/A"),
+                ("Manual review", "completed", "pending"),
+            ]
             return GraduationResult(
                 criteria=[
-                    GraduationCriterion("Paper trading days", ">= 30", "0", False),
-                    GraduationCriterion("Cumulative return", "> 0%", "N/A", False),
-                    GraduationCriterion("Sharpe ratio", "> 0.5", "N/A", False),
-                    GraduationCriterion("Max drawdown", "< 10%", "N/A", False),
-                    GraduationCriterion(
-                        "No circuit breaker (7d)", "0 days", "N/A", False
-                    ),
-                    GraduationCriterion("Manual review", "completed", "pending", False),
+                    GraduationCriterion(name, thresh, val, False)
+                    for name, thresh, val in criteria_defs
                 ],
                 all_passed=False,
                 trading_days=0,
@@ -232,51 +213,60 @@ class PerformanceTracker:
                 last_date="N/A",
             )
 
-        c1 = GraduationCriterion(
-            "Paper trading days",
-            ">= 30",
-            str(metrics.trading_days),
-            metrics.trading_days >= 30,
+        sharpe_value = (
+            f"{metrics.sharpe_ratio:.3f}" if metrics.sharpe_ratio is not None else "N/A"
         )
-        c2 = GraduationCriterion(
-            "Cumulative return",
-            "> 0%",
-            f"{metrics.cumulative_return_pct:.2f}%",
-            metrics.cumulative_return_pct > 0,
-        )
-        c3 = GraduationCriterion(
-            "Sharpe ratio",
-            "> 0.5",
-            f"{metrics.sharpe_ratio:.3f}"
-            if metrics.sharpe_ratio is not None
-            else "N/A",
-            metrics.sharpe_ratio is not None and metrics.sharpe_ratio > 0.5,
-        )
-        c4 = GraduationCriterion(
-            "Max drawdown",
-            "< 10%",
-            f"{metrics.max_drawdown_pct:.2f}%",
-            metrics.max_drawdown_pct < 10.0,
-        )
-        c5 = GraduationCriterion(
-            "No circuit breaker (7d)",
-            "0 days",
-            f"{metrics.circuit_breaker_days_last_7} days",
-            metrics.circuit_breaker_days_last_7 == 0,
-        )
-        c6 = GraduationCriterion(
-            "Manual review",
-            "completed",
-            "pending",
-            False,
+        sharpe_passed = (
+            metrics.sharpe_ratio is not None and metrics.sharpe_ratio > MIN_SHARPE_RATIO
         )
 
-        criteria = [c1, c2, c3, c4, c5, c6]
-        all_passed = all(c.passed for c in criteria)
+        criteria_defs = [
+            (
+                "Paper trading days",
+                f">= {MIN_TRADING_DAYS}",
+                str(metrics.trading_days),
+                metrics.trading_days >= MIN_TRADING_DAYS,
+            ),
+            (
+                "Cumulative return",
+                "> 0%",
+                f"{metrics.cumulative_return_pct:.2f}%",
+                metrics.cumulative_return_pct > 0,
+            ),
+            (
+                "Sharpe ratio",
+                f"> {MIN_SHARPE_RATIO}",
+                sharpe_value,
+                sharpe_passed,
+            ),
+            (
+                "Max drawdown",
+                f"< {MAX_DRAWDOWN_PCT}%",
+                f"{metrics.max_drawdown_pct:.2f}%",
+                metrics.max_drawdown_pct < MAX_DRAWDOWN_PCT,
+            ),
+            (
+                "No circuit breaker (7d)",
+                "0 days",
+                f"{metrics.circuit_breaker_days_last_7} days",
+                metrics.circuit_breaker_days_last_7 == 0,
+            ),
+            (
+                "Manual review",
+                "completed",
+                "pending",
+                False,
+            ),
+        ]
+
+        criteria = [
+            GraduationCriterion(name, thresh, val, passed)
+            for name, thresh, val, passed in criteria_defs
+        ]
 
         return GraduationResult(
             criteria=criteria,
-            all_passed=all_passed,
+            all_passed=all(c.passed for c in criteria),
             trading_days=metrics.trading_days,
             first_date=metrics.first_date,
             last_date=metrics.last_date,
@@ -287,29 +277,81 @@ class PerformanceTracker:
         snapshots = self._read_snapshots()
         if not snapshots:
             return "0"
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = self._today()
         for s in reversed(snapshots):
             if s["date"] == today:
                 return s.get("daily_pnl", "0")
         return "0"
 
     def _read_snapshots(self) -> list[dict]:
-        """Read all snapshots from JSONL."""
+        """Read all snapshots from JSONL, skipping malformed lines."""
         if not self._path.exists():
             return []
         snapshots = []
         with open(self._path) as f:
-            for line in f:
+            for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     snapshots.append(json.loads(line))
+                except json.JSONDecodeError:
+                    log.warning("malformed_snapshot_line", line_num=line_num)
         return snapshots
 
     def _write_snapshots(self, snapshots: list[dict]) -> None:
-        """Rewrite the full snapshots file (needed for dedup)."""
-        with open(self._path, "w") as f:
-            for s in snapshots:
-                f.write(json.dumps(s, cls=DecimalEncoder) + "\n")
+        """Atomically rewrite the snapshots file (write to temp, then replace)."""
+        fd, tmp = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for s in snapshots:
+                    f.write(json.dumps(s, cls=DecimalEncoder) + "\n")
+            os.replace(tmp, self._path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+
+    @staticmethod
+    def _today() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _deduplicate_snapshots(
+        existing: list[dict], today: str, new_snapshot: dict
+    ) -> list[dict]:
+        """Replace existing entry for today, or append if new."""
+        updated = False
+        result = []
+        for s in existing:
+            if s["date"] == today:
+                result.append(new_snapshot)
+                updated = True
+            else:
+                result.append(s)
+        if not updated:
+            result.append(new_snapshot)
+        return result
+
+    @staticmethod
+    def _compute_cumulative_return(
+        first_equity: float | None, current_equity: float
+    ) -> float:
+        if not first_equity or first_equity <= 0:
+            return 0.0
+        return (current_equity - first_equity) / first_equity * 100
+
+    @staticmethod
+    def _compute_sharpe(daily_returns: list[float]) -> float | None:
+        """Annualized Sharpe ratio (252 trading days)."""
+        if len(daily_returns) < 2:
+            return None
+        mean_ret = sum(daily_returns) / len(daily_returns)
+        std_ret = math.sqrt(
+            sum((r - mean_ret) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+        )
+        if std_ret <= 0:
+            return None
+        return round((mean_ret / std_ret) * math.sqrt(252), 3)
 
     @staticmethod
     def _compute_max_drawdown(equities: list[float]) -> float:

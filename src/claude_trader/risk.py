@@ -216,6 +216,16 @@ class RiskManager:
             consecutive_losses=self._consecutive_losses,
         )
 
+    def get_risk_state(self) -> dict:
+        """Return current risk state for external consumers (e.g. snapshots)."""
+        return {
+            "open_positions": self.open_positions,
+            "consecutive_losses": self._consecutive_losses,
+            "circuit_breaker_triggered": (
+                self._consecutive_losses >= self.config.max_consecutive_losses
+            ),
+        }
+
     def reset_daily(self) -> None:
         """Reset daily counters. Called at start of each trading day."""
         self._daily_pnl = Decimal("0")

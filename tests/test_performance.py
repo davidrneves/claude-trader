@@ -26,31 +26,19 @@ def _write_snapshots(path, snapshots):
 def _make_snapshot(
     date="2025-01-01",
     equity="10000",
-    cash="5000",
-    portfolio_value="10000",
     daily_pnl="0",
     cumulative_return_pct=0.0,
-    positions_count=0,
     trades_count=0,
-    buys=0,
-    sells=0,
     max_drawdown_pct=0.0,
-    consecutive_losses=0,
     circuit_breaker_triggered=False,
 ):
     return {
         "date": date,
         "equity": equity,
-        "cash": cash,
-        "portfolio_value": portfolio_value,
         "daily_pnl": daily_pnl,
         "cumulative_return_pct": cumulative_return_pct,
-        "positions_count": positions_count,
         "trades_count": trades_count,
-        "buys": buys,
-        "sells": sells,
         "max_drawdown_pct": max_drawdown_pct,
-        "consecutive_losses": consecutive_losses,
         "circuit_breaker_triggered": circuit_breaker_triggered,
     }
 
@@ -271,3 +259,24 @@ class TestGetDailyPnl:
             ],
         )
         assert tracker.get_daily_pnl() == "150.50"
+
+
+class TestMalformedJsonl:
+    def test_skips_bad_lines(self, tracker, snapshots_path):
+        with open(snapshots_path, "w") as f:
+            f.write(json.dumps(_make_snapshot()) + "\n")
+            f.write("this is not json\n")
+            f.write(
+                json.dumps(_make_snapshot(date="2025-01-02", equity="10100")) + "\n"
+            )
+        snapshots = tracker._read_snapshots()
+        assert len(snapshots) == 2
+
+
+class TestAtomicWrite:
+    def test_write_creates_valid_file(self, tracker, snapshots_path):
+        data = [_make_snapshot(), _make_snapshot(date="2025-01-02")]
+        tracker._write_snapshots(data)
+        assert snapshots_path.exists()
+        result = tracker._read_snapshots()
+        assert len(result) == 2

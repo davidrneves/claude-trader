@@ -245,33 +245,30 @@ class TradingBot:
 
     def _record_snapshot_and_log(self, summary: dict) -> None:
         """Record performance snapshot and write Obsidian daily log."""
-        try:
-            account = self._executor.get_account()
-            trades_today = self._logger.get_daily_summary()
+        account = self._executor.get_account()
+        trades_today = self._logger.get_daily_summary()
+        snapshot = None
 
+        try:
             snapshot = self._performance.record_snapshot(
                 account=account,
                 trades_today=trades_today,
-                risk_state={
-                    "open_positions": self._risk.open_positions,
-                    "consecutive_losses": self._risk._consecutive_losses,
-                    "circuit_breaker_triggered": (
-                        self._risk._consecutive_losses
-                        >= self._risk.config.max_consecutive_losses
-                    ),
-                },
+                risk_state=self._risk.get_risk_state(),
             )
+        except Exception as e:
+            log.error("snapshot_failed", error=str(e))
 
+        try:
             self._obsidian.write_daily_log(
                 equity=str(account["equity"]),
                 cash=str(account["cash"]),
-                daily_pnl=snapshot.daily_pnl,
+                daily_pnl=snapshot.daily_pnl if snapshot else "0",
                 positions=self._executor.get_positions(),
                 trades=summary["trades"],
                 analyses=summary["analyses"],
             )
         except Exception as e:
-            log.warning("snapshot_or_log_failed", error=str(e))
+            log.error("obsidian_log_failed", error=str(e))
 
     def run_once(self) -> dict:
         """Execute one trading cycle with multi-agent analysis."""
