@@ -22,7 +22,7 @@ from alpaca.data.timeframe import TimeFrame
 from claude_trader.analyst import Analyst, MultiAgentAnalysis, Signal
 from claude_trader.config import Settings
 from claude_trader.constants import ET, MARKET_CLOSE, MARKET_OPEN
-from claude_trader.executor import AlpacaExecutor
+from claude_trader.executor import AlpacaExecutor, df_to_bar_dicts
 from claude_trader.logger import TradeLogger
 from claude_trader.news import NewsFeed
 from claude_trader.notifier import TelegramNotifier
@@ -86,24 +86,8 @@ class TradingBot:
 
         df = bars.df
         closes = df["close"].tolist()
-        ohlcv = self._extract_ohlcv(df)
+        ohlcv = df_to_bar_dicts(df, window=30)
         return closes, ohlcv
-
-    @staticmethod
-    def _extract_ohlcv(df, window: int = 30) -> list[dict]:
-        """Extract recent OHLCV data from a DataFrame."""
-        recent = df.iloc[-window:]
-        return [
-            {
-                "date": str(idx),
-                "open": row["open"],
-                "high": row["high"],
-                "low": row["low"],
-                "close": row["close"],
-                "volume": row["volume"],
-            }
-            for idx, row in recent.iterrows()
-        ]
 
     def _scan_and_execute_sells(self, summary: dict, positions: list[dict]) -> None:
         """Check existing positions for sell signals and execute."""

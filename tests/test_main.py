@@ -20,11 +20,36 @@ from claude_trader.__main__ import (
 def test_parse_args_defaults():
     with patch("sys.argv", ["prog"]):
         args = parse_args()
+    assert args.backtest is False
     assert args.dry_run is False
     assert args.summary is False
     assert args.graduation is False
     assert args.metrics is False
     assert args.interval is None
+    assert args.start is None
+    assert args.end is None
+    assert args.capital == 100000
+
+
+def test_parse_args_backtest():
+    with patch(
+        "sys.argv",
+        [
+            "prog",
+            "--backtest",
+            "--start",
+            "2025-01-01",
+            "--end",
+            "2025-06-30",
+            "--capital",
+            "50000",
+        ],
+    ):
+        args = parse_args()
+    assert args.backtest is True
+    assert args.start == "2025-01-01"
+    assert args.end == "2025-06-30"
+    assert args.capital == 50000
 
 
 def test_parse_args_dry_run():

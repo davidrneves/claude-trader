@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from claude_trader.backtest import BacktestConfig, BacktestEngine
+from claude_trader.backtest import BacktestConfig, BacktestEngine, print_backtest_report
 
 
 def _make_bars(prices: list[float], start_date: str = "2025-01-01") -> list[dict]:
@@ -285,3 +285,24 @@ class TestForceClose:
         assert last_sell.price == pytest.approx(120.0)
         assert last_sell.pnl is not None
         assert last_sell.pnl > 0  # 120 - 100 = profit
+
+
+class TestReport:
+    def test_print_backtest_report(self, capsys):
+        """Verify report prints key sections."""
+        config = _make_config(ema_period=5)
+        prices = [90.0] * 5 + [100.0, 105.0, 110.0] + [85.0] * 5
+        bars = {"TEST": _make_bars(prices)}
+
+        engine = BacktestEngine(config)
+        result = engine.run(bars)
+        print_backtest_report(result)
+
+        output = capsys.readouterr().out
+        assert "BACKTEST REPORT" in output
+        assert "PERFORMANCE" in output
+        assert "GRADUATION CHECK" in output
+        assert "Total return:" in output
+        assert "Sharpe ratio:" in output
+        assert "Max drawdown:" in output
+        assert "Win rate:" in output

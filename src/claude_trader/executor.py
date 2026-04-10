@@ -151,3 +151,33 @@ class AlpacaExecutor:
             end=end,
         )
         return self._data_client.get_stock_bars(request)
+
+
+def df_to_bar_dicts(df, window: int | None = None) -> list[dict]:
+    """Convert an Alpaca OHLCV DataFrame to a list of bar dicts.
+
+    Handles both single-index (timestamp) and MultiIndex (symbol, timestamp)
+    DataFrames from the Alpaca SDK.
+
+    Args:
+        df: pandas DataFrame with OHLCV columns.
+        window: if set, only return the last N bars.
+    """
+    subset = df.iloc[-window:] if window else df
+    bars = []
+    for idx, row in subset.iterrows():
+        # Alpaca returns MultiIndex (symbol, timestamp) for single-symbol queries
+        ts = idx[1] if isinstance(idx, tuple) else idx
+        bars.append(
+            {
+                "date": ts.strftime("%Y-%m-%d")
+                if hasattr(ts, "strftime")
+                else str(ts)[:10],
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"]),
+            }
+        )
+    return bars

@@ -2,6 +2,7 @@
 
 Modes:
   (default)     Run scheduler loop during market hours
+  --backtest    Run backtest against historical data
   --dry-run     Validate connectivity without trading
   --summary     Send daily summary only
   --graduation  Show graduation dashboard
@@ -12,7 +13,7 @@ import argparse
 import asyncio
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import structlog
 
@@ -25,6 +26,27 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Claude Trading Bot",
         prog="python -m claude_trader",
+    )
+    parser.add_argument(
+        "--backtest", action="store_true", help="Run backtest against historical data"
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="Backtest start date (YYYY-MM-DD, default: 6 months ago)",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="Backtest end date (YYYY-MM-DD, default: today)",
+    )
+    parser.add_argument(
+        "--capital",
+        type=float,
+        default=100000,
+        help="Backtest initial capital (default: 100000)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Validate connectivity without trading"
@@ -109,6 +131,61 @@ async def run_scheduler(
     log.info("scheduler_stopped")
 
 
+def _run_backtest(args: argparse.Namespace, settings: Settings) -> int:
+    """Fetch historical data and run backtest."""
+    from decimal import Decimal
+
+    from claude_trader.backtest import (
+        BacktestConfig,
+        BacktestEngine,
+        print_backtest_report,
+    )
+    from claude_trader.executor import AlpacaExecutor
+    from claude_trader.risk import RiskConfig, RiskManager
+
+    log = structlog.get_logger()
+
+    end_date = args.end or datetime.now().strftime("%Y-%m-%d")
+    start_date = args.start or (datetime.now() - timedelta(days=180)).strftime(
+        "%Y-%m-%d"
+    )
+
+    config = BacktestConfig(
+        symbols=settings.watchlist,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=Decimal(str(args.capital)),
+        ema_period=settings.ema_period,
+        stop_loss_pct=settings.stop_loss_pct,
+        trailing_stop_pct=settings.trailing_stop_pct,
+        max_position_pct=settings.max_position_pct,
+    )
+
+    risk_config = RiskConfig.from_settings(settings)
+    risk_manager = RiskManager(risk_config, portfolio_value=Decimal(str(args.capital)))
+    executor = AlpacaExecutor(settings, risk_manager)
+
+    log.info(
+        "backtest_starting",
+        symbols=config.symbols,
+        start=start_date,
+        end=end_date,
+        capital=str(config.initial_capital),
+    )
+
+    bars = BacktestEngine.fetch_backtest_data(
+        executor, config.symbols, start_date, end_date
+    )
+    empty = [s for s in config.symbols if not bars.get(s)]
+    if empty:
+        log.warning("backtest_missing_data", symbols=empty)
+
+    engine = BacktestEngine(config)
+    result = engine.run(bars)
+    print_backtest_report(result)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
 
@@ -128,6 +205,9 @@ def main() -> int:
 
     confirm_live_trading(settings)
     log_startup_summary(settings)
+
+    if args.backtest:
+        return _run_backtest(args, settings)
 
     if args.dry_run:
         from claude_trader.dry_run import run_dry_run

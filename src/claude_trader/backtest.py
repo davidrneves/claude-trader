@@ -16,7 +16,7 @@ from claude_trader.performance import PerformanceTracker
 from claude_trader.strategy import EMAMomentumStrategy
 
 if TYPE_CHECKING:
-    from concurrent.futures import Executor
+    from claude_trader.executor import AlpacaExecutor
 
 log = structlog.get_logger()
 
@@ -296,12 +296,12 @@ class BacktestEngine:
 
     @staticmethod
     def fetch_backtest_data(
-        executor: Executor, symbols: list[str], start: str, end: str
+        executor: AlpacaExecutor, symbols: list[str], start: str, end: str
     ) -> dict[str, list[dict]]:
-        """Fetch historical bars via executor for each symbol.
+        """Fetch historical bars via Alpaca for each symbol.
 
         Args:
-            executor: an object with get_bars(symbol, start, end) method.
+            executor: AlpacaExecutor instance.
             symbols: list of ticker symbols.
             start: start date string (YYYY-MM-DD).
             end: end date string (YYYY-MM-DD).
@@ -309,7 +309,89 @@ class BacktestEngine:
         Returns:
             dict mapping symbol to list of bar dicts.
         """
+        from alpaca.data.timeframe import TimeFrame
+
+        from claude_trader.executor import df_to_bar_dicts
+
         bars: dict[str, list[dict]] = {}
         for symbol in symbols:
-            bars[symbol] = executor.get_bars(symbol, start, end)
+            result = executor.get_bars(symbol, TimeFrame.Day, start, end)
+            if not hasattr(result, "df") or result.df.empty:
+                log.warning("backtest_no_data", symbol=symbol)
+                bars[symbol] = []
+                continue
+            symbol_bars = df_to_bar_dicts(result.df)
+            bars[symbol] = symbol_bars
+            log.info("backtest_data_fetched", symbol=symbol, bars=len(symbol_bars))
         return bars
+
+
+def print_backtest_report(result: BacktestResult) -> None:
+    """Print a formatted ASCII backtest report."""
+    cfg = result.config
+
+    print()
+    print("=" * 70)
+    print("  BACKTEST REPORT")
+    print("=" * 70)
+    print(f"  Period:          {cfg.start_date} to {cfg.end_date}")
+    print(f"  Symbols:         {', '.join(cfg.symbols)}")
+    print(f"  Initial capital: ${float(cfg.initial_capital):,.2f}")
+    print(f"  EMA period:      {cfg.ema_period}")
+    print(f"  Stop loss:       {float(cfg.stop_loss_pct) * 100:.1f}%")
+    print(f"  Trailing stop:   {float(cfg.trailing_stop_pct) * 100:.1f}%")
+    print(f"  Max position:    {float(cfg.max_position_pct) * 100:.1f}%")
+    print("-" * 70)
+
+    # Metrics
+    print("  PERFORMANCE")
+    print("-" * 70)
+    final_equity = (
+        result.equity_curve[-1] if result.equity_curve else float(cfg.initial_capital)
+    )
+    print(f"  Final equity:    ${final_equity:,.2f}")
+    print(f"  Total return:    {result.total_return_pct:+.2f}%")
+    print(f"  Total P&L:       ${result.total_pnl:+,.2f}")
+    sharpe_str = (
+        f"{result.sharpe_ratio:.3f}" if result.sharpe_ratio is not None else "N/A"
+    )
+    print(f"  Sharpe ratio:    {sharpe_str}")
+    print(f"  Max drawdown:    {result.max_drawdown_pct:.2f}%")
+    print(f"  Win rate:        {result.win_rate:.1f}%")
+    print(f"  Trades:          {result.trade_count}")
+    print("-" * 70)
+
+    # Graduation check
+    print("  GRADUATION CHECK")
+    print("-" * 70)
+    sharpe_pass = result.sharpe_ratio is not None and result.sharpe_ratio > 0.5
+    dd_pass = result.max_drawdown_pct < 10.0
+    return_pass = result.total_return_pct > 0
+
+    def _mark(ok: bool) -> str:
+        return "PASS" if ok else "FAIL"
+
+    print(
+        f"  Positive return:   {_mark(return_pass):<6} ({result.total_return_pct:+.2f}%)"
+    )
+    print(f"  Sharpe > 0.5:      {_mark(sharpe_pass):<6} ({sharpe_str})")
+    print(f"  Drawdown < 10%:    {_mark(dd_pass):<6} ({result.max_drawdown_pct:.2f}%)")
+    print("-" * 70)
+
+    # Trade log
+    sells = [t for t in result.trades if t.side == "sell"]
+    if sells:
+        print("  TRADE LOG (sells)")
+        print("-" * 70)
+        print(f"  {'Date':<12} {'Symbol':<8} {'Price':>10} {'Qty':>6} {'P&L':>12}")
+        print("-" * 70)
+        for t in sells:
+            pnl_str = f"${t.pnl:+,.2f}" if t.pnl is not None else "-"
+            print(
+                f"  {t.date:<12} {t.symbol:<8} {t.price:>10.2f} {t.qty:>6} {pnl_str:>12}"
+            )
+    else:
+        print("  No trades executed.")
+
+    print("=" * 70)
+    print()

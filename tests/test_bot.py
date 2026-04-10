@@ -105,9 +105,11 @@ class TestRunOnceExceptionHandling:
         assert isinstance(result, dict)
 
 
-class TestExtractOhlcv:
+class TestDfToBarDicts:
     def test_extracts_correct_fields(self):
         import pandas as pd
+
+        from claude_trader.executor import df_to_bar_dicts
 
         df = pd.DataFrame(
             {
@@ -120,10 +122,11 @@ class TestExtractOhlcv:
             index=["2024-01-01", "2024-01-02"],
         )
 
-        result = TradingBot._extract_ohlcv(df, window=2)
+        result = df_to_bar_dicts(df, window=2)
         assert len(result) == 2
         assert result[0]["open"] == 1.0
         assert result[1]["close"] == 2.2
+        assert "date" in result[0]
 
 
 class TestExtractAgentScores:
