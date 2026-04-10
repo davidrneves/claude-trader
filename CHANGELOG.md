@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-04-10
+
+### Added
+
+- Backtest CLI: `python -m claude_trader --backtest` with `--start`, `--end`, `--capital` flags
+- Formatted backtest report with performance metrics, graduation check, and trade log
+- Shared `df_to_bar_dicts()` helper for Alpaca DataFrame conversion
+
+### Fixed
+
+- Backtest date parsing: Alpaca MultiIndex `(symbol, timestamp)` now handled correctly with `strftime` instead of fragile string slicing
+- `fetch_backtest_data` type hint and method signature now match real `AlpacaExecutor` interface
+
+### Changed
+
+- Extracted `df_to_bar_dicts()` from `TradingBot._extract_ohlcv` into `executor.py` (DRY: shared by bot and backtest)
+
 ## [0.5.0] - 2026-04-10
 
 ### Added
