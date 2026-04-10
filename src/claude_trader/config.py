@@ -83,6 +83,11 @@ class Settings(BaseSettings):
         description="Obsidian vault path for daily trade logs",
     )
 
+    # --- Scheduler ---
+    cycle_interval_minutes: int = Field(
+        default=15, description="Minutes between trading cycles"
+    )
+
     # --- Logging ---
     log_level: str = Field(default="INFO")
     trades_log_path: Path = Field(default=Path("trades.jsonl"))

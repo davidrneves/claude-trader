@@ -30,6 +30,7 @@ extend-select = ["BLE"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = ["integration: tests that call external APIs"]
 
 [tool.coverage.run]
 source = ["claude_trader"]
