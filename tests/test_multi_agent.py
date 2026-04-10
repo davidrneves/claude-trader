@@ -20,7 +20,6 @@ def aggregator():
         technical_weight=0.4,
         fundamental_weight=0.3,
         min_agreement=3,
-        min_agent_count=4,
     )
 
 

@@ -127,10 +127,7 @@ class TradingBot:
                         "price": current_price,
                         "rationale": "EMA crossover below",
                     }
-                    self._logger.log_trade(**trade_info, order_id=result["order_id"])
-                    self._telegram.trade_alert(**trade_info)
-                    summary["actions"].append(f"sold {pos['qty']} {symbol}")
-                    summary["trades"].append(trade_info)
+                    self._record_trade(trade_info, summary, order_id=result["order_id"])
 
     def _analyze_symbol(
         self, symbol: str, ohlcv: list[dict]
@@ -220,11 +217,24 @@ class TradingBot:
             if analysis
             else "EMA crossover (no analysis)",
         }
+        self._record_trade(
+            trade_info, summary, order_id=result["order_id"], agent_scores=agent_scores
+        )
+
+    def _record_trade(
+        self,
+        trade_info: dict,
+        summary: dict,
+        order_id: str,
+        agent_scores: dict | None = None,
+    ) -> None:
+        """Record a trade to logger, telegram, and summary."""
         self._logger.log_trade(
-            **trade_info, agent_scores=agent_scores, order_id=result["order_id"]
+            **trade_info, agent_scores=agent_scores, order_id=order_id
         )
         self._telegram.trade_alert(**trade_info, agent_scores=agent_scores)
-        summary["actions"].append(f"bought {result['qty']} {symbol}")
+        past = "sold" if trade_info["side"] == "sell" else "bought"
+        summary["actions"].append(f"{past} {trade_info['qty']} {trade_info['symbol']}")
         summary["trades"].append(trade_info)
 
     @staticmethod

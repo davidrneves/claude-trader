@@ -9,6 +9,7 @@ dependencies = [
     "google-genai>=1.71.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
+    "pytz>=2024.1",
     "python-telegram-bot>=22.7",
     "structlog>=25.5.0",
 ]
@@ -17,12 +18,31 @@ dependencies = [
 requires = ["uv_build>=0.10.7,<0.11.0"]
 build-backend = "uv_build"
 
+[tool.ruff.lint]
+extend-select = ["BLE"]
+
 [tool.ruff.lint.per-file-ignores]
-"scripts/*" = ["E402"]
+"scripts/*" = ["E402", "BLE001"]
+"src/claude_trader/bot.py" = ["BLE001"]
+"src/claude_trader/notifier.py" = ["BLE001"]
+"src/claude_trader/news.py" = ["BLE001"]
+"src/claude_trader/executor.py" = ["BLE001"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["claude_trader"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 60
 
 [dependency-groups]
 dev = [
+    "pip-audit>=2.9.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
+    "pytest-cov>=6.1.0",
     "ruff>=0.15.10",
 ]

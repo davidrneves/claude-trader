@@ -112,13 +112,11 @@ class SignalAggregator:
         technical_weight: float = 0.4,
         fundamental_weight: float = 0.3,
         min_agreement: int = 3,
-        min_agent_count: int = 4,
     ) -> None:
         self.sentiment_weight = sentiment_weight
         self.technical_weight = technical_weight
         self.fundamental_weight = fundamental_weight
         self.min_agreement = min_agreement
-        self.min_agent_count = min_agent_count
 
     def aggregate(
         self,
@@ -248,9 +246,13 @@ class Analyst:
             data = _call_gemini(self._client, prompt_fn())
             return result_cls(**data)
         except (GeminiError, GeminiParseError) as e:
-            log.warning(f"{log_prefix}_api_failed", symbol=symbol, error=str(e))
-        except Exception as e:
-            log.warning(f"{log_prefix}_parse_failed", symbol=symbol, error=str(e))
+            log.warning(
+                "agent_api_failed", agent=log_prefix, symbol=symbol, error=str(e)
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            log.warning(
+                "agent_parse_failed", agent=log_prefix, symbol=symbol, error=str(e)
+            )
         return result_cls(**fallback_kwargs)
 
     def analyze_sentiment(self, symbol: str, headlines: list[str]) -> SentimentResult:

@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from claude_trader.analyst import MultiAgentAnalysis, Signal
 from claude_trader.strategy import EMAMomentumStrategy, calculate_ema
 
 
@@ -59,6 +60,41 @@ class TestDailyReset:
         strategy._ensure_daily_reset()
         assert strategy._daily_trades == {}
         assert strategy._last_reset_date == date.today()
+
+
+class TestShouldBuy:
+    def test_buy_on_ema_crossover_with_positive_sentiment(self):
+        """Price crosses above EMA with positive analysis -> buy."""
+        strategy = EMAMomentumStrategy(ema_period=3)
+        # Build prices where prev was below EMA and current crosses above.
+        # EMA(3) of [10, 9, 8, 7] gives declining EMA, then a jump to 15.
+        prices = [10.0, 9.0, 8.0, 7.0, 15.0]
+        analysis = MultiAgentAnalysis(
+            symbol="AAPL",
+            combined_score=0.5,
+            final_signal=Signal.BUY,
+            agreement_count=3,
+            reasoning="test",
+        )
+        assert strategy.should_buy("AAPL", 15.0, prices, analysis) is True
+
+    def test_no_buy_below_ema(self):
+        strategy = EMAMomentumStrategy(ema_period=3)
+        prices = [10.0, 11.0, 12.0, 13.0, 14.0]
+        assert strategy.should_buy("AAPL", 5.0, prices) is False
+
+    def test_no_buy_low_sentiment(self):
+        """Even with EMA crossover, low sentiment blocks buy."""
+        strategy = EMAMomentumStrategy(ema_period=3)
+        prices = [10.0, 9.0, 8.0, 7.0, 15.0]
+        analysis = MultiAgentAnalysis(
+            symbol="AAPL",
+            combined_score=-0.5,
+            final_signal=Signal.SELL,
+            agreement_count=3,
+            reasoning="test",
+        )
+        assert strategy.should_buy("AAPL", 15.0, prices, analysis) is False
 
 
 class TestShouldSell:

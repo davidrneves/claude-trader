@@ -21,13 +21,27 @@ class TelegramNotifier:
             log.debug("telegram_disabled", message=text[:50])
             return
         try:
-            asyncio.run(
-                self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=text,
-                    parse_mode="Markdown",
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                loop.create_task(
+                    self._bot.send_message(
+                        chat_id=self._chat_id,
+                        text=text,
+                        parse_mode="Markdown",
+                    )
                 )
-            )
+            else:
+                asyncio.run(
+                    self._bot.send_message(
+                        chat_id=self._chat_id,
+                        text=text,
+                        parse_mode="Markdown",
+                    )
+                )
         except Exception as e:
             log.warning("telegram_send_failed", error=str(e))
 

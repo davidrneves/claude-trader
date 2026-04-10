@@ -99,7 +99,6 @@ class EMAMomentumStrategy:
         symbol: str,
         current_price: float,
         prices: list[float],
-        entry_price: float | None = None,
     ) -> bool:
         """Determine if we should sell this symbol."""
         ema_values = calculate_ema(prices, self.ema_period)
