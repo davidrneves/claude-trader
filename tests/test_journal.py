@@ -3,8 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from claude_trader.journal import (
     compute_journal_stats,
     filter_trades,
