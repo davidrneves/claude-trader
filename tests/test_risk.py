@@ -192,6 +192,34 @@ class TestBannedHours:
         assert result.approved
 
 
+class TestPositionSizeLimit:
+    def test_reject_trade_exceeding_limit(self, config):
+        rm = RiskManager(config, portfolio_value=Decimal("10000"))
+        # 150 * 2 = 300 > 200 (2% of 10000)
+        result = rm.check_trade(
+            TradeRequest(symbol="AAPL", side="buy", price=Decimal("150"), qty=2)
+        )
+        assert not result.approved
+        assert "position_size" in result.checks_failed
+
+    def test_allow_trade_within_limit(self, config):
+        rm = RiskManager(config, portfolio_value=Decimal("10000"))
+        # 150 * 1 = 150 < 200 (2% of 10000)
+        result = rm.check_trade(
+            TradeRequest(symbol="AAPL", side="buy", price=Decimal("150"), qty=1)
+        )
+        assert result.approved
+
+    def test_skip_check_when_portfolio_zero(self, config):
+        rm = RiskManager(config, portfolio_value=Decimal("0"))
+        result = rm.check_trade(
+            TradeRequest(symbol="AAPL", side="buy", price=Decimal("150"), qty=1)
+        )
+        # Position size check is skipped; other checks may still reject,
+        # but daily_loss check with 0 portfolio passes through.
+        assert "position_size" not in (result.checks_failed or [])
+
+
 class TestTradeRequestValidation:
     def test_zero_quantity_rejected(self, risk_manager):
         result = risk_manager.check_trade(

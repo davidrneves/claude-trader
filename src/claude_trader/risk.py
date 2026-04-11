@@ -167,7 +167,21 @@ class RiskManager:
             )
         passed.append("max_positions")
 
-        # 5. Banned hours
+        # 5. Position size limit
+        if self.portfolio_value > 0:
+            trade_value = trade.price * trade.qty
+            max_trade_value = self.portfolio_value * self.config.max_position_pct
+            if trade_value > max_trade_value:
+                failed.append("position_size")
+                return RiskCheckResult(
+                    approved=False,
+                    reason=f"Position size exceeds limit: {trade_value} > {max_trade_value} ({self.config.max_position_pct:.0%} of portfolio)",
+                    checks_passed=passed,
+                    checks_failed=failed,
+                )
+        passed.append("position_size")
+
+        # 6. Banned hours
         if market_time is not None:
             open_minutes = (
                 MARKET_OPEN.hour * 60
