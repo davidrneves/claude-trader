@@ -59,6 +59,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--metrics", action="store_true", help="Show detailed metrics")
     parser.add_argument(
+        "--journal", action="store_true", help="Browse trade journal"
+    )
+    parser.add_argument(
+        "--symbol", type=str, default=None, help="Filter journal by symbol"
+    )
+    parser.add_argument(
+        "--side", type=str, default=None, help="Filter journal by side (buy/sell)"
+    )
+    parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Disable WebSocket trade update streaming",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=None,
@@ -214,6 +228,18 @@ def main() -> int:
 
         report = run_dry_run(settings)
         return 0 if report.all_passed else 1
+
+    if args.journal:
+        from claude_trader.journal import print_journal
+
+        print_journal(
+            log_path=settings.trades_log_path,
+            symbol=args.symbol,
+            start_date=args.start,
+            end_date=args.end,
+            side=args.side,
+        )
+        return 0
 
     bot = TradingBot(settings)
 
