@@ -261,7 +261,25 @@ def main() -> int:
         bot.run_daily_summary()
     else:
         interval = args.interval or settings.cycle_interval_minutes
-        asyncio.run(run_scheduler(bot, settings, interval))
+        if args.no_stream:
+            asyncio.run(run_scheduler(bot, settings, interval))
+        else:
+            from claude_trader.streaming import TradeUpdateListener
+
+            listener = TradeUpdateListener(
+                api_key=settings.alpaca_api_key,
+                secret_key=settings.alpaca_secret_key,
+                paper=settings.alpaca_paper_trade,
+            )
+
+            async def run_with_stream():
+                await asyncio.gather(
+                    run_scheduler(bot, settings, interval),
+                    listener.run(),
+                    return_exceptions=True,
+                )
+
+            asyncio.run(run_with_stream())
 
     return 0
 
