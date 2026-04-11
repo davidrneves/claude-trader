@@ -140,6 +140,42 @@ class AlpacaExecutor:
         self._risk.open_positions = max(0, self._risk.open_positions - 1)
         return {"order_id": str(order.id), "symbol": symbol, "qty": qty}
 
+    def update_stop_loss(
+        self, symbol: str, qty: int, new_stop_price: Decimal, old_order_id: str
+    ) -> dict | None:
+        """Replace a GTC stop-loss order with updated trailing stop price."""
+        try:
+            self._client.cancel_order_by_id(old_order_id)
+        except Exception as e:
+            log.warning(
+                "cancel_stop_failed", symbol=symbol, order_id=old_order_id, error=str(e)
+            )
+
+        stop_price = round(float(new_stop_price), 2)
+        try:
+            stop_order = self._client.submit_order(
+                StopOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    stop_price=stop_price,
+                )
+            )
+            log.info("trailing_stop_updated", symbol=symbol, new_stop=stop_price)
+            return {"stop_order_id": str(stop_order.id), "stop_price": stop_price}
+        except Exception as e:
+            log.error("trailing_stop_update_failed", symbol=symbol, error=str(e))
+            return None
+
+    def cancel_stop_loss(self, order_id: str) -> None:
+        """Cancel a GTC stop-loss order (cleanup when position sold)."""
+        try:
+            self._client.cancel_order_by_id(order_id)
+            log.info("stop_loss_cancelled", order_id=order_id)
+        except Exception as e:
+            log.warning("cancel_stop_failed", order_id=order_id, error=str(e))
+
     def get_bars(
         self, symbol: str, timeframe: TimeFrame, start: str, end: str | None = None
     ):

@@ -116,3 +116,62 @@ class TestExecutorSell:
             risk_manager.open_positions = 0
             executor.sell("AAPL", 10)
             assert risk_manager.open_positions == 0
+
+
+class TestUpdateStopLoss:
+    def test_update_cancels_old_and_submits_new(self, risk_manager):
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._risk = risk_manager
+            executor._client = MagicMock()
+            executor._client.submit_order.return_value = FakeOrder("stop-new")
+
+            result = executor.update_stop_loss(
+                "AAPL", 10, Decimal("104.50"), "stop-old"
+            )
+            executor._client.cancel_order_by_id.assert_called_once_with("stop-old")
+            executor._client.submit_order.assert_called_once()
+            assert result is not None
+            assert result["stop_order_id"] == "stop-new"
+            assert result["stop_price"] == 104.5
+
+    def test_update_handles_cancel_failure(self, risk_manager):
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._risk = risk_manager
+            executor._client = MagicMock()
+            executor._client.cancel_order_by_id.side_effect = Exception("not found")
+            executor._client.submit_order.return_value = FakeOrder("stop-new")
+
+            result = executor.update_stop_loss(
+                "AAPL", 10, Decimal("104.50"), "stop-old"
+            )
+            assert result is not None
+            assert result["stop_order_id"] == "stop-new"
+
+
+class TestCancelStopLoss:
+    def test_cancel_calls_api(self, risk_manager):
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+
+            executor.cancel_stop_loss("stop-123")
+            executor._client.cancel_order_by_id.assert_called_once_with("stop-123")
+
+    def test_cancel_handles_error(self, risk_manager):
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+            executor._client.cancel_order_by_id.side_effect = Exception("fail")
+
+            # Should not raise
+            executor.cancel_stop_loss("stop-123")
