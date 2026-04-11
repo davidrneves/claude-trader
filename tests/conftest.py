@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,5 +29,6 @@ def mock_settings():
     settings.obsidian_log_path = MagicMock()
     settings.trades_log_path = MagicMock()
     settings.snapshots_path = MagicMock()
+    settings.state_path = Path("/tmp/test_bot_state.json")
     settings.watchlist = ["AAPL", "MSFT"]
     return settings

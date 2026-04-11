@@ -13,9 +13,10 @@ wheels/
 .env
 *.tfvars
 
-# Trading logs
+# Trading logs and state
 trades.jsonl
 snapshots.jsonl
+bot_state.json
 
 # Python
 __pycache__/

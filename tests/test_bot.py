@@ -18,6 +18,7 @@ def bot(mock_settings):
         patch("claude_trader.bot.TelegramNotifier"),
         patch("claude_trader.bot.ObsidianLogger"),
         patch("claude_trader.bot.TradeLogger"),
+        patch("claude_trader.bot.BotStateStore"),
     ):
         return TradingBot(mock_settings)
 
@@ -366,3 +367,47 @@ class TestTrailingStops:
         assert "AAPL" in bot._trailing_stops
         assert bot._trailing_stops["AAPL"]["floor"] == Decimal("95")
         assert bot._trailing_stops["AAPL"]["stop_order_id"] == "stop-1"
+
+
+class TestStatePersistence:
+    def test_state_saved_after_run_once(self, bot):
+        bot._is_market_open = MagicMock(return_value=True)
+        bot._get_market_time = MagicMock(return_value=time(11, 0))
+        bot._executor.get_account.return_value = {
+            "equity": Decimal("10000"),
+            "cash": Decimal("5000"),
+            "buying_power": Decimal("5000"),
+            "portfolio_value": Decimal("10000"),
+        }
+        bot._executor.get_positions.return_value = []
+        bot._get_price_bars = MagicMock(return_value=([], []))
+
+        bot.run_once()
+        bot._state_store.save.assert_called_once()
+
+    def test_state_not_saved_when_market_closed(self, bot):
+        bot._is_market_open = MagicMock(return_value=False)
+        bot.run_once()
+        bot._state_store.save.assert_not_called()
+
+    def test_load_restores_peak_equity(self, mock_settings):
+        with (
+            patch("claude_trader.bot.AlpacaExecutor"),
+            patch("claude_trader.bot.NewsFeed"),
+            patch("claude_trader.bot.TelegramNotifier"),
+            patch("claude_trader.bot.ObsidianLogger"),
+            patch("claude_trader.bot.TradeLogger"),
+            patch("claude_trader.bot.BotStateStore") as mock_store_cls,
+        ):
+            mock_store_cls.return_value.load.return_value = {
+                "peak_equity": Decimal("15000"),
+                "trailing_stops": {
+                    "AAPL": {"floor": Decimal("142"), "stop_order_id": "s-1"},
+                },
+                "last_trading_date": "2026-04-10",
+            }
+            bot = TradingBot(mock_settings)
+
+        assert bot._peak_equity == Decimal("15000")
+        assert bot._trailing_stops["AAPL"]["floor"] == Decimal("142")
+        assert bot._last_trading_date == date(2026, 4, 10)

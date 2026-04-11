@@ -29,6 +29,7 @@ from claude_trader.notifier import TelegramNotifier
 from claude_trader.obsidian import ObsidianLogger
 from claude_trader.performance import PerformanceTracker
 from claude_trader.risk import RiskConfig, RiskManager
+from claude_trader.state import BotStateStore
 from claude_trader.strategy import EMAMomentumStrategy
 
 log = structlog.get_logger()
@@ -56,9 +57,39 @@ class TradingBot:
         )
         self._obsidian = ObsidianLogger(vault_path=settings.obsidian_log_path)
         self._performance = PerformanceTracker(settings.snapshots_path)
+        self._state_store = BotStateStore(settings.state_path)
         self._peak_equity: Decimal = Decimal("0")
         self._last_trading_date: date | None = None
         self._trailing_stops: dict[str, dict] = {}
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Restore persisted state from disk."""
+        state = self._state_store.load()
+        if not state:
+            return
+        if "peak_equity" in state:
+            self._peak_equity = state["peak_equity"]
+        if "trailing_stops" in state:
+            self._trailing_stops = state["trailing_stops"]
+        if "last_trading_date" in state:
+            self._last_trading_date = date.fromisoformat(state["last_trading_date"])
+        log.info(
+            "state_loaded",
+            peak_equity=str(self._peak_equity),
+            trailing_stops=list(self._trailing_stops.keys()),
+        )
+
+    def _save_state(self) -> None:
+        """Persist current state to disk."""
+        state = {
+            "peak_equity": self._peak_equity,
+            "trailing_stops": self._trailing_stops,
+            "last_trading_date": self._last_trading_date.isoformat()
+            if self._last_trading_date
+            else None,
+        }
+        self._state_store.save(state)
 
     def _get_market_time(self) -> time:
         return datetime.now(ET).time()
@@ -363,6 +394,7 @@ class TradingBot:
             summary["actions"].append("no_signals")
 
         self._record_snapshot_and_log(summary)
+        self._save_state()
         log.info(
             "cycle_complete",
             actions=summary["actions"],

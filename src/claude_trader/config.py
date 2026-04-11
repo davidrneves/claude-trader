@@ -92,3 +92,4 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     trades_log_path: Path = Field(default=Path("trades.jsonl"))
     snapshots_path: Path = Field(default=Path("snapshots.jsonl"))
+    state_path: Path = Field(default=Path("bot_state.json"))
