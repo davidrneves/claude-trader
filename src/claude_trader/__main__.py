@@ -58,9 +58,7 @@ def parse_args() -> argparse.Namespace:
         "--graduation", action="store_true", help="Show graduation dashboard"
     )
     parser.add_argument("--metrics", action="store_true", help="Show detailed metrics")
-    parser.add_argument(
-        "--journal", action="store_true", help="Browse trade journal"
-    )
+    parser.add_argument("--journal", action="store_true", help="Browse trade journal")
     parser.add_argument(
         "--symbol", type=str, default=None, help="Filter journal by symbol"
     )
@@ -127,6 +125,7 @@ async def run_scheduler(
         if now_et.date() != current_date:
             current_date = now_et.date()
             daily_summary_sent = False
+            bot.reset_daily()
 
         is_weekday = now_et.weekday() < 5
 

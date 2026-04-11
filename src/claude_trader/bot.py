@@ -13,7 +13,7 @@ Multi-agent pipeline:
 6. Log to JSONL + Obsidian + Telegram
 """
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import structlog
@@ -56,6 +56,9 @@ class TradingBot:
         )
         self._obsidian = ObsidianLogger(vault_path=settings.obsidian_log_path)
         self._performance = PerformanceTracker(settings.snapshots_path)
+        self._peak_equity: Decimal = Decimal("0")
+        self._last_trading_date: date | None = None
+        self._trailing_stops: dict[str, dict] = {}
 
     def _get_market_time(self) -> time:
         return datetime.now(ET).time()
@@ -67,6 +70,12 @@ class TradingBot:
     def _update_portfolio(self) -> None:
         account = self._executor.get_account()
         self._risk.portfolio_value = account["portfolio_value"]
+        equity = account["equity"]
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+        if self._peak_equity > 0:
+            drawdown_pct = (self._peak_equity - equity) / self._peak_equity
+            self._risk.record_drawdown(drawdown_pct)
         positions = self._executor.get_positions()
         self._risk.open_positions = len(positions)
         log.info(
@@ -90,26 +99,69 @@ class TradingBot:
         return closes, ohlcv
 
     def _scan_and_execute_sells(self, summary: dict, positions: list[dict]) -> None:
-        """Check existing positions for sell signals and execute."""
+        """Check existing positions for trailing stop and EMA sell signals."""
         for pos in positions:
             symbol = pos["symbol"]
             current_price = float(pos["current_price"])
+            entry_price = pos["avg_entry"]
+
+            # Update trailing stop floor
+            trailing_sell = False
+            if symbol in self._trailing_stops:
+                stored = self._trailing_stops[symbol]
+                new_floor = self._risk.calculate_trailing_stop(
+                    entry_price, Decimal(str(current_price)), stored["floor"]
+                )
+                if new_floor > stored["floor"]:
+                    stored["floor"] = new_floor
+                    # Update the Alpaca GTC stop order
+                    if stored.get("stop_order_id"):
+                        updated = self._executor.update_stop_loss(
+                            symbol, pos["qty"], new_floor, stored["stop_order_id"]
+                        )
+                        if updated:
+                            stored["stop_order_id"] = updated["stop_order_id"]
+
+                # Check if price hit trailing stop
+                if Decimal(str(current_price)) <= stored["floor"]:
+                    trailing_sell = True
+                    log.info(
+                        "trailing_stop_triggered",
+                        symbol=symbol,
+                        price=current_price,
+                        floor=str(stored["floor"]),
+                    )
+
+            # Check EMA sell signal
             closes, _ = self._get_price_bars(symbol)
             if not closes:
                 closes = [current_price]
+            ema_sell = self._strategy.should_sell(symbol, current_price, closes)
 
-            if self._strategy.should_sell(symbol, current_price, closes):
+            if trailing_sell or ema_sell:
                 result = self._executor.sell(symbol, pos["qty"])
                 if result:
-                    pnl = Decimal(str(current_price)) - pos["avg_entry"]
+                    # Cancel the GTC stop order since we sold manually
+                    if symbol in self._trailing_stops:
+                        stop_id = self._trailing_stops[symbol].get("stop_order_id")
+                        if stop_id:
+                            self._executor.cancel_stop_loss(stop_id)
+                        del self._trailing_stops[symbol]
+
+                    pnl = Decimal(str(current_price)) - entry_price
                     self._risk.record_trade_result(profit=pnl * pos["qty"])
                     self._risk.record_daily_pnl(pnl * pos["qty"])
+                    rationale = (
+                        "trailing stop triggered"
+                        if trailing_sell
+                        else "EMA crossover below"
+                    )
                     trade_info = {
                         "symbol": symbol,
                         "side": "sell",
                         "qty": pos["qty"],
                         "price": current_price,
-                        "rationale": "EMA crossover below",
+                        "rationale": rationale,
                     }
                     self._record_trade(trade_info, summary, order_id=result["order_id"])
 
@@ -191,6 +243,17 @@ class TradingBot:
             return
 
         self._strategy.record_trade(symbol)
+
+        # Initialize trailing stop tracking
+        entry_price = Decimal(str(current_price))
+        initial_floor = self._risk.calculate_trailing_stop(
+            entry_price, entry_price, None
+        )
+        self._trailing_stops[symbol] = {
+            "floor": initial_floor,
+            "stop_order_id": result.get("stop_order_id"),
+        }
+
         agent_scores = self._extract_agent_scores(analysis)
         trade_info = {
             "symbol": symbol,
@@ -264,6 +327,12 @@ class TradingBot:
         except Exception as e:
             log.error("obsidian_log_failed", error=str(e))
 
+    def reset_daily(self) -> None:
+        """Reset daily counters for risk manager and strategy."""
+        self._risk.reset_daily()
+        self._strategy.reset_daily()
+        log.info("bot_daily_reset")
+
     def run_once(self) -> dict:
         """Execute one trading cycle with multi-agent analysis."""
         summary = {
@@ -277,6 +346,11 @@ class TradingBot:
             log.info("market_closed")
             summary["actions"].append("market_closed")
             return summary
+
+        today = datetime.now(ET).date()
+        if self._last_trading_date is not None and today != self._last_trading_date:
+            self.reset_daily()
+        self._last_trading_date = today
 
         market_time = self._get_market_time()
         self._update_portfolio()

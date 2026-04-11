@@ -154,3 +154,50 @@ async def test_scheduler_calls_run_once(mock_settings):
                 await run_scheduler(bot, mock_settings, 15)
 
     assert bot.run_once.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_resets_on_date_change(mock_settings):
+    bot = MagicMock()
+    mock_settings.cycle_interval_minutes = 15
+
+    shutdown = asyncio.Event()
+    iteration = 0
+
+    with patch("claude_trader.__main__.asyncio.Event", return_value=shutdown):
+        with patch("claude_trader.__main__.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value = MagicMock()
+
+            day1 = datetime(2026, 1, 5)  # Monday
+            day2 = datetime(2026, 1, 6)  # Tuesday
+
+            mock_now_day1 = MagicMock()
+            mock_now_day1.weekday.return_value = 0
+            mock_now_day1.time.return_value = time(10, 0)
+            mock_now_day1.date.return_value = day1.date()
+
+            mock_now_day2 = MagicMock()
+            mock_now_day2.weekday.return_value = 1
+            mock_now_day2.time.return_value = time(10, 0)
+            mock_now_day2.date.return_value = day2.date()
+
+            with patch("claude_trader.__main__.datetime") as mock_dt:
+                mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+                def advance_day():
+                    nonlocal iteration
+                    iteration += 1
+                    if iteration == 1:
+                        # Switch to day2 for next loop iteration
+                        mock_dt.now.return_value = mock_now_day2
+                    else:
+                        shutdown.set()
+
+                mock_dt.now.return_value = mock_now_day1
+                bot.run_once.side_effect = advance_day
+
+                # Use interval=0 so asyncio.wait_for times out immediately
+                # between iterations instead of sleeping 15 minutes
+                await run_scheduler(bot, mock_settings, 0)
+
+    bot.reset_daily.assert_called_once()
