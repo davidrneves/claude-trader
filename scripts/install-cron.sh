@@ -1,5 +1,9 @@
 #!/bin/bash
-# Install cron jobs for autonomous trading bot operation.
+# DEPRECATED: Use install-launchd.sh instead.
+# launchd fires missed jobs on wake from sleep; cron silently skips them.
+# This script is kept for reference only.
+#
+# Original: Install cron jobs for autonomous trading bot operation.
 # Times converted from ET to local timezone (WEST/WET, 5h offset).
 # During DST transition weeks (~2 weeks/year), timing may shift by 1h;
 # the bot's internal market-hours check handles this gracefully.

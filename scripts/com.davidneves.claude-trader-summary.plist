@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.davidneves.claude-trader-summary</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/uv</string>
+		<string>run</string>
+		<string>python</string>
+		<string>scripts/run.py</string>
+		<string>--summary</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/davidneves/Workspace/Personal/claude-trader</string>
+
+	<key>StartCalendarInterval</key>
+	<!-- End-of-day summary (16:15 ET = 21:15 local) -->
+	<dict>
+		<key>Hour</key>
+		<integer>21</integer>
+		<key>Minute</key>
+		<integer>15</integer>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/Users/davidneves/Workspace/Personal/claude-trader/logs/launchd-summary.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/davidneves/Workspace/Personal/claude-trader/logs/launchd-summary.error.log</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/davidneves/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>HOME</key>
+		<string>/Users/davidneves</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>Nice</key>
+	<integer>10</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

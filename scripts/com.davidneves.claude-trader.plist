@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.davidneves.claude-trader</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/uv</string>
+		<string>run</string>
+		<string>python</string>
+		<string>scripts/run.py</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/davidneves/Workspace/Personal/claude-trader</string>
+
+	<key>StartCalendarInterval</key>
+	<array>
+		<!-- Market open scan (9:45 ET = 14:45 local) -->
+		<dict>
+			<key>Hour</key>
+			<integer>14</integer>
+			<key>Minute</key>
+			<integer>45</integer>
+		</dict>
+		<!-- Late morning (11:30 ET = 16:30 local) -->
+		<dict>
+			<key>Hour</key>
+			<integer>16</integer>
+			<key>Minute</key>
+			<integer>30</integer>
+		</dict>
+		<!-- Midday (13:00 ET = 18:00 local) -->
+		<dict>
+			<key>Hour</key>
+			<integer>18</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<!-- Afternoon (14:30 ET = 19:30 local) -->
+		<dict>
+			<key>Hour</key>
+			<integer>19</integer>
+			<key>Minute</key>
+			<integer>30</integer>
+		</dict>
+	</array>
+
+	<key>StandardOutPath</key>
+	<string>/Users/davidneves/Workspace/Personal/claude-trader/logs/launchd.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/davidneves/Workspace/Personal/claude-trader/logs/launchd.error.log</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/davidneves/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>HOME</key>
+		<string>/Users/davidneves</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>Nice</key>
+	<integer>10</integer>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
