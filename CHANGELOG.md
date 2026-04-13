@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-13
+
+### Added
+
+- Migrate scheduling from cron to launchd (fires missed jobs on wake from sleep)
+- Persist bot state (peak equity, trailing stops) across sessions
+- Alpaca WebSocket trade update listener for real-time fill notifications
+- Trade journal CLI for manual review of historical trades
+
+### Fixed
+
+- Wire trailing stop execution into live trading loop
+- Wire drawdown tracking into portfolio updates
+- Add position size check in risk manager `check_trade`
+
 ## [0.6.0] - 2026-04-10
 
 ### Added
