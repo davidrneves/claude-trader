@@ -17,6 +17,7 @@ wheels/
 trades.jsonl
 snapshots.jsonl
 bot_state.json
+logs/
 
 # Python
 __pycache__/
