@@ -167,6 +167,7 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "pytz" },
     { name = "structlog" },
+    { name = "tenacity" },
 ]
 
 [package.dev-dependencies]
@@ -187,6 +188,7 @@ requires-dist = [
     { name = "python-telegram-bot", specifier = ">=22.7" },
     { name = "pytz", specifier = ">=2024.1" },
     { name = "structlog", specifier = ">=25.5.0" },
+    { name = "tenacity", specifier = ">=9.1.2" },
 ]
 
 [package.metadata.requires-dev]

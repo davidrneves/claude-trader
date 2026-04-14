@@ -8,9 +8,10 @@ from decimal import Decimal
 
 import structlog
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 from alpaca.trading.requests import (
     MarketOrderRequest,
+    StopLossRequest,
     StopOrderRequest,
 )
 from alpaca.data.historical import StockHistoricalDataClient
@@ -101,7 +102,12 @@ class AlpacaExecutor:
         qty: int | None = None,
         market_time=None,
     ) -> dict | None:
-        """Buy shares with automatic stop-loss. Returns order info or None if rejected."""
+        """Buy shares with automatic stop-loss via OTO order.
+
+        Uses Alpaca's One-Triggers-Other (OTO) order class to atomically
+        submit a market buy with an attached stop-loss sell. This avoids
+        the wash trade rejection that occurs when placing separate orders.
+        """
         if qty is None:
             qty = self._risk.calculate_position_size(symbol, price)
         if qty == 0:
@@ -115,12 +121,18 @@ class AlpacaExecutor:
             log.warning("buy_rejected_risk", symbol=symbol, reason=check.reason)
             return None
 
-        order = self._submit_market_order(symbol, qty, OrderSide.BUY)
+        stop_price = round(float(self._risk.calculate_stop_loss(price)), 2)
+        order = self._client.submit_order(
+            MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.OTO,
+                stop_loss=StopLossRequest(stop_price=stop_price),
+            )
+        )
         log.info("buy_executed", symbol=symbol, qty=qty, order_id=str(order.id))
-
-        stop_result = self.set_stop_loss(symbol, qty, price)
-        if not stop_result:
-            log.warning("buy_without_stop_loss", symbol=symbol, qty=qty)
 
         self._risk.open_positions += 1
         result = {
@@ -128,9 +140,15 @@ class AlpacaExecutor:
             "symbol": symbol,
             "qty": qty,
         }
-        if stop_result:
-            result["stop_order_id"] = stop_result["stop_order_id"]
-            result["stop_price"] = stop_result["stop_price"]
+
+        # Extract stop leg order ID from OTO response
+        if order.legs:
+            result["stop_order_id"] = str(order.legs[0].id)
+            result["stop_price"] = stop_price
+            log.info("stop_loss_set", symbol=symbol, stop_price=stop_price)
+        else:
+            log.warning("oto_no_stop_leg", symbol=symbol)
+
         return result
 
     def sell(self, symbol: str, qty: int) -> dict | None:

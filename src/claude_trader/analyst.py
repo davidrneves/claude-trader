@@ -18,6 +18,12 @@ from typing import TypeVar
 import structlog
 from google import genai
 from pydantic import BaseModel, Field
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 log = structlog.get_logger()
 
@@ -200,8 +206,26 @@ class SignalAggregator:
 # --- Gemini-Powered Agents ---
 
 
+def _log_retry(retry_state) -> None:
+    log.warning(
+        "gemini_retry",
+        attempt=retry_state.attempt_number,
+        error=str(retry_state.outcome.exception()),
+    )
+
+
+@retry(
+    retry=retry_if_exception_type(GeminiError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    before_sleep=_log_retry,
+    reraise=True,
+)
 def _call_gemini(client: genai.Client, prompt: str) -> dict:
     """Make a Gemini API call and parse JSON response.
+
+    Retries up to 3 times on transient errors (connection resets, timeouts).
+    Does NOT retry parse errors (GeminiParseError) since those won't self-heal.
 
     Raises GeminiError or GeminiParseError on failure.
     """

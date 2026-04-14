@@ -12,6 +12,7 @@ dependencies = [
     "pytz>=2024.1",
     "python-telegram-bot>=22.7",
     "structlog>=25.5.0",
+    "tenacity>=9.1.2",
 ]
 
 [build-system]

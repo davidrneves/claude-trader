@@ -129,6 +129,32 @@ class TradingBot:
         ohlcv = df_to_bar_dicts(df, window=30)
         return closes, ohlcv
 
+    def _reconcile_positions(self, positions: list[dict]) -> None:
+        """Ensure all open positions have trailing stop protection.
+
+        Covers positions created outside the bot (manual trades) and
+        positions where the stop order failed (e.g. wash trade rejection).
+        """
+        for pos in positions:
+            symbol = pos["symbol"]
+            if symbol in self._trailing_stops:
+                continue
+            entry_price = pos["avg_entry"]
+            current_price = Decimal(str(pos["current_price"]))
+            initial_floor = self._risk.calculate_trailing_stop(
+                entry_price, current_price, None
+            )
+            self._trailing_stops[symbol] = {
+                "floor": initial_floor,
+                "stop_order_id": None,
+            }
+            log.info(
+                "position_reconciled",
+                symbol=symbol,
+                entry_price=str(entry_price),
+                floor=str(initial_floor),
+            )
+
     def _scan_and_execute_sells(self, summary: dict, positions: list[dict]) -> None:
         """Check existing positions for trailing stop and EMA sell signals."""
         for pos in positions:
@@ -143,15 +169,36 @@ class TradingBot:
                 new_floor = self._risk.calculate_trailing_stop(
                     entry_price, Decimal(str(current_price)), stored["floor"]
                 )
-                if new_floor > stored["floor"]:
+                floor_raised = new_floor > stored["floor"]
+                if floor_raised:
                     stored["floor"] = new_floor
-                    # Update the Alpaca GTC stop order
-                    if stored.get("stop_order_id"):
-                        updated = self._executor.update_stop_loss(
-                            symbol, pos["qty"], new_floor, stored["stop_order_id"]
+
+                if not stored.get("stop_order_id") and not stored.get(
+                    "stop_create_failed"
+                ):
+                    # No stop order exists - create one (covers OTO failures,
+                    # reconciled positions, and legacy null stop_order_ids).
+                    # Flag failures to avoid retrying every cycle.
+                    result = self._executor.set_stop_loss(
+                        symbol, pos["qty"], entry_price
+                    )
+                    if result:
+                        stored["stop_order_id"] = result["stop_order_id"]
+                        log.info(
+                            "missing_stop_created",
+                            symbol=symbol,
+                            stop_price=result["stop_price"],
                         )
-                        if updated:
-                            stored["stop_order_id"] = updated["stop_order_id"]
+                    else:
+                        stored["stop_create_failed"] = True
+                        log.warning("stop_create_failed", symbol=symbol)
+                elif floor_raised:
+                    # Update existing Alpaca GTC stop order with new floor
+                    updated = self._executor.update_stop_loss(
+                        symbol, pos["qty"], new_floor, stored["stop_order_id"]
+                    )
+                    if updated:
+                        stored["stop_order_id"] = updated["stop_order_id"]
 
                 # Check if price hit trailing stop
                 if Decimal(str(current_price)) <= stored["floor"]:
@@ -387,6 +434,7 @@ class TradingBot:
         self._update_portfolio()
 
         positions = self._executor.get_positions()
+        self._reconcile_positions(positions)
         self._scan_and_execute_sells(summary, positions)
         self._scan_and_execute_buys(summary, positions, market_time)
 

@@ -8,9 +8,15 @@ import pytest
 from claude_trader.risk import RiskConfig, RiskManager
 
 
-class FakeOrder:
-    def __init__(self, order_id="order-123"):
+class FakeLeg:
+    def __init__(self, order_id="stop-leg-001"):
         self.id = order_id
+
+
+class FakeOrder:
+    def __init__(self, order_id="order-123", legs=None):
+        self.id = order_id
+        self.legs = legs
 
 
 @pytest.fixture
@@ -47,38 +53,55 @@ class TestExecutorBuy:
             result = executor.buy("BRK.A", Decimal("999999"), qty=None)
             assert result is None
 
-    def test_successful_buy_with_stop_loss(self, risk_manager):
-        """Buy succeeds and sets stop-loss."""
+    def test_successful_buy_with_oto_stop_loss(self, risk_manager):
+        """Buy uses OTO order class with attached stop-loss leg."""
+        from alpaca.trading.enums import OrderClass
         from claude_trader.executor import AlpacaExecutor
 
         with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
             executor = AlpacaExecutor.__new__(AlpacaExecutor)
             executor._risk = risk_manager
             executor._client = MagicMock()
-            executor._client.submit_order.return_value = FakeOrder("buy-001")
+            executor._client.submit_order.return_value = FakeOrder(
+                "buy-001", legs=[FakeLeg("stop-leg-001")]
+            )
 
             result = executor.buy("AAPL", Decimal("100"), qty=1)
             assert result is not None
             assert result["symbol"] == "AAPL"
             assert result["qty"] == 1
             assert result["order_id"] == "buy-001"
-            assert "stop_order_id" in result
-            assert executor._client.submit_order.call_count == 2
+            assert result["stop_order_id"] == "stop-leg-001"
+            # OTO submits a single order, not two separate ones
+            assert executor._client.submit_order.call_count == 1
+            # Verify OTO order class was used
+            call_args = executor._client.submit_order.call_args
+            order_req = call_args[0][0]
+            assert order_req.order_class == OrderClass.OTO
+            assert order_req.stop_loss is not None
 
-    def test_stop_loss_failure_still_returns_buy(self, risk_manager):
-        """If stop-loss fails, buy still succeeds but without stop info."""
+    def test_oto_failure_rejects_entire_buy(self, risk_manager):
+        """If OTO order fails, entire buy is rejected (no unprotected position)."""
         from claude_trader.executor import AlpacaExecutor
 
         with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
             executor = AlpacaExecutor.__new__(AlpacaExecutor)
             executor._risk = risk_manager
             executor._client = MagicMock()
+            executor._client.submit_order.side_effect = Exception("OTO rejected")
 
-            # First call (buy) succeeds, second call (stop) fails
-            executor._client.submit_order.side_effect = [
-                FakeOrder("buy-001"),
-                Exception("stop-loss API error"),
-            ]
+            with pytest.raises(Exception, match="OTO rejected"):
+                executor.buy("AAPL", Decimal("100"), qty=1)
+
+    def test_oto_without_legs_logs_warning(self, risk_manager):
+        """If OTO response has no legs, result omits stop_order_id."""
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._risk = risk_manager
+            executor._client = MagicMock()
+            executor._client.submit_order.return_value = FakeOrder("buy-001", legs=None)
 
             result = executor.buy("AAPL", Decimal("100"), qty=1)
             assert result is not None
