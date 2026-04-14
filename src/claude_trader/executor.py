@@ -4,11 +4,18 @@ Thin layer over alpaca-py. Every order passes through the risk manager
 before reaching the API. No direct trading without risk approval.
 """
 
+import json
 from decimal import Decimal
 
 import structlog
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderClass, OrderSide, OrderType, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import (
+    OrderClass,
+    OrderSide,
+    OrderType,
+    QueryOrderStatus,
+    TimeInForce,
+)
 from alpaca.trading.requests import (
     GetOrdersRequest,
     MarketOrderRequest,
@@ -23,6 +30,29 @@ from claude_trader.config import Settings
 from claude_trader.risk import RiskManager, TradeRequest
 
 log = structlog.get_logger()
+
+
+def _parse_existing_stop_from_error(error_str: str) -> str | None:
+    """Extract existing stop order ID from Alpaca rejection error.
+
+    When Alpaca rejects a stop order with code 40310000 ("insufficient qty
+    available"), the error JSON includes a `related_orders` list with the
+    IDs of existing orders that hold the shares. Return the first ID so
+    the caller can adopt it instead of creating a new one.
+    """
+    try:
+        data = json.loads(error_str)
+    except json.JSONDecodeError, TypeError:
+        return None
+    if data.get("code") != 40310000:
+        return None
+    related = data.get("related_orders", [])
+    if related:
+        return str(related[0])
+    existing_id = data.get("existing_order_id")
+    if existing_id:
+        return str(existing_id)
+    return None
 
 
 class AlpacaExecutor:
@@ -98,7 +128,12 @@ class AlpacaExecutor:
         )
 
     def set_stop_loss(self, symbol: str, qty: int, entry_price: Decimal) -> dict | None:
-        """Set a stop-loss order. Returns order info or None on failure."""
+        """Set a stop-loss order. Returns order info or None on failure.
+
+        If Alpaca rejects because shares are already held by an existing
+        stop order, returns the existing order ID with ``adopted=True``
+        so the caller can track it instead of giving up.
+        """
         stop_price = round(float(self._risk.calculate_stop_loss(entry_price)), 2)
         try:
             stop_order = self._client.submit_order(
@@ -113,7 +148,20 @@ class AlpacaExecutor:
             log.info("stop_loss_set", symbol=symbol, stop_price=stop_price)
             return {"stop_order_id": str(stop_order.id), "stop_price": stop_price}
         except Exception as e:
-            log.error("stop_loss_failed", symbol=symbol, error=str(e))
+            error_str = str(e)
+            log.error("stop_loss_failed", symbol=symbol, error=error_str)
+            existing_id = _parse_existing_stop_from_error(error_str)
+            if existing_id:
+                log.info(
+                    "existing_stop_adopted_from_error",
+                    symbol=symbol,
+                    order_id=existing_id,
+                )
+                return {
+                    "stop_order_id": existing_id,
+                    "stop_price": None,
+                    "adopted": True,
+                }
             return None
 
     def buy(

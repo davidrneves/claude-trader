@@ -63,10 +63,15 @@ class BotStateStore:
         if "trailing_stops" in raw and isinstance(raw["trailing_stops"], dict):
             stops = {}
             for symbol, data in raw["trailing_stops"].items():
-                stops[symbol] = {
+                entry = {
                     "floor": Decimal(str(data["floor"])),
                     "stop_order_id": data.get("stop_order_id"),
                 }
+                if data.get("stop_fail_count"):
+                    entry["stop_fail_count"] = int(data["stop_fail_count"])
+                if data.get("stop_last_attempt"):
+                    entry["stop_last_attempt"] = data["stop_last_attempt"]
+                stops[symbol] = entry
             result["trailing_stops"] = stops
 
         return result

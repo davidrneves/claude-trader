@@ -34,6 +34,27 @@ from claude_trader.strategy import EMAMomentumStrategy
 
 log = structlog.get_logger()
 
+STOP_RETRY_COOLDOWN_MINUTES = 60
+
+
+def _should_retry_stop(stored: dict) -> bool:
+    """Check if a failed stop creation should be retried.
+
+    Retries on a cooldown: after each failure, wait STOP_RETRY_COOLDOWN_MINUTES
+    before the next attempt. This prevents hammering the API while still
+    recovering from transient failures or resolved conflicts.
+    """
+    fail_count = stored.get("stop_fail_count", 0)
+    if fail_count == 0:
+        return True
+    last_attempt = stored.get("stop_last_attempt")
+    if not last_attempt:
+        return True
+    elapsed = (
+        datetime.now(timezone.utc) - datetime.fromisoformat(last_attempt)
+    ).total_seconds()
+    return elapsed >= STOP_RETRY_COOLDOWN_MINUTES * 60
+
 
 class TradingBot:
     """Orchestrates the full multi-agent trading pipeline."""
@@ -134,6 +155,7 @@ class TradingBot:
 
         Covers positions created outside the bot (manual trades) and
         positions where the stop order failed (e.g. wash trade rejection).
+        Checks Alpaca for existing stop orders before assuming none exist.
         """
         for pos in positions:
             symbol = pos["symbol"]
@@ -144,15 +166,18 @@ class TradingBot:
             initial_floor = self._risk.calculate_trailing_stop(
                 entry_price, current_price, None
             )
+            existing = self._executor.get_open_stop_orders(symbol)
+            stop_order_id = existing[0]["order_id"] if existing else None
             self._trailing_stops[symbol] = {
                 "floor": initial_floor,
-                "stop_order_id": None,
+                "stop_order_id": stop_order_id,
             }
             log.info(
                 "position_reconciled",
                 symbol=symbol,
                 entry_price=str(entry_price),
                 floor=str(initial_floor),
+                existing_stop=stop_order_id,
             )
 
     def _scan_and_execute_sells(self, summary: dict, positions: list[dict]) -> None:
@@ -173,14 +198,14 @@ class TradingBot:
                 if floor_raised:
                     stored["floor"] = new_floor
 
-                if not stored.get("stop_order_id") and not stored.get(
-                    "stop_create_failed"
-                ):
+                if not stored.get("stop_order_id") and _should_retry_stop(stored):
                     # No tracked stop - check if one already exists in Alpaca
                     # (e.g. from a previous OTO buy whose leg wasn't recorded).
                     existing = self._executor.get_open_stop_orders(symbol)
                     if existing:
                         stored["stop_order_id"] = existing[0]["order_id"]
+                        stored.pop("stop_fail_count", None)
+                        stored.pop("stop_last_attempt", None)
                         log.info(
                             "existing_stop_adopted",
                             symbol=symbol,
@@ -193,14 +218,32 @@ class TradingBot:
                         )
                         if result:
                             stored["stop_order_id"] = result["stop_order_id"]
-                            log.info(
-                                "missing_stop_created",
-                                symbol=symbol,
-                                stop_price=result["stop_price"],
-                            )
+                            stored.pop("stop_fail_count", None)
+                            stored.pop("stop_last_attempt", None)
+                            if result.get("adopted"):
+                                log.info(
+                                    "existing_stop_adopted_from_error",
+                                    symbol=symbol,
+                                    order_id=result["stop_order_id"],
+                                )
+                            else:
+                                log.info(
+                                    "missing_stop_created",
+                                    symbol=symbol,
+                                    stop_price=result["stop_price"],
+                                )
                         else:
-                            stored["stop_create_failed"] = True
-                            log.warning("stop_create_failed", symbol=symbol)
+                            stored["stop_fail_count"] = (
+                                stored.get("stop_fail_count", 0) + 1
+                            )
+                            stored["stop_last_attempt"] = datetime.now(
+                                timezone.utc
+                            ).isoformat()
+                            log.warning(
+                                "stop_create_failed",
+                                symbol=symbol,
+                                fail_count=stored["stop_fail_count"],
+                            )
                 elif floor_raised:
                     # Update existing Alpaca GTC stop order with new floor
                     updated = self._executor.update_stop_loss(
