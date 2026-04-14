@@ -198,3 +198,58 @@ class TestCancelStopLoss:
 
             # Should not raise
             executor.cancel_stop_loss("stop-123")
+
+
+class FakeStopOrder:
+    def __init__(self, order_id="stop-exist", order_type=None, stop_price=92.0):
+        from alpaca.trading.enums import OrderType
+
+        self.id = order_id
+        self.order_type = order_type if order_type is not None else OrderType.STOP
+        self.stop_price = stop_price
+
+
+class TestGetOpenStopOrders:
+    def test_returns_existing_stop_orders(self, risk_manager):
+        from alpaca.trading.enums import OrderType
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+            executor._client.get_orders.return_value = [
+                FakeStopOrder("stop-1", OrderType.STOP, 92.0),
+                FakeStopOrder("stop-2", OrderType.STOP_LIMIT, 90.0),
+            ]
+
+            result = executor.get_open_stop_orders("AAPL")
+            assert len(result) == 2
+            assert result[0]["order_id"] == "stop-1"
+            assert result[0]["stop_price"] == 92.0
+
+    def test_filters_non_stop_orders(self, risk_manager):
+        from alpaca.trading.enums import OrderType
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+            executor._client.get_orders.return_value = [
+                FakeStopOrder("limit-1", OrderType.LIMIT, None),
+                FakeStopOrder("stop-1", OrderType.STOP, 92.0),
+            ]
+
+            result = executor.get_open_stop_orders("AAPL")
+            assert len(result) == 1
+            assert result[0]["order_id"] == "stop-1"
+
+    def test_returns_empty_on_api_error(self, risk_manager):
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+            executor._client.get_orders.side_effect = Exception("API error")
+
+            result = executor.get_open_stop_orders("AAPL")
+            assert result == []

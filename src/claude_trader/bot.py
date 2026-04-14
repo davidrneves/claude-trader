@@ -176,22 +176,31 @@ class TradingBot:
                 if not stored.get("stop_order_id") and not stored.get(
                     "stop_create_failed"
                 ):
-                    # No stop order exists - create one (covers OTO failures,
-                    # reconciled positions, and legacy null stop_order_ids).
-                    # Flag failures to avoid retrying every cycle.
-                    result = self._executor.set_stop_loss(
-                        symbol, pos["qty"], entry_price
-                    )
-                    if result:
-                        stored["stop_order_id"] = result["stop_order_id"]
+                    # No tracked stop - check if one already exists in Alpaca
+                    # (e.g. from a previous OTO buy whose leg wasn't recorded).
+                    existing = self._executor.get_open_stop_orders(symbol)
+                    if existing:
+                        stored["stop_order_id"] = existing[0]["order_id"]
                         log.info(
-                            "missing_stop_created",
+                            "existing_stop_adopted",
                             symbol=symbol,
-                            stop_price=result["stop_price"],
+                            order_id=existing[0]["order_id"],
+                            stop_price=existing[0]["stop_price"],
                         )
                     else:
-                        stored["stop_create_failed"] = True
-                        log.warning("stop_create_failed", symbol=symbol)
+                        result = self._executor.set_stop_loss(
+                            symbol, pos["qty"], entry_price
+                        )
+                        if result:
+                            stored["stop_order_id"] = result["stop_order_id"]
+                            log.info(
+                                "missing_stop_created",
+                                symbol=symbol,
+                                stop_price=result["stop_price"],
+                            )
+                        else:
+                            stored["stop_create_failed"] = True
+                            log.warning("stop_create_failed", symbol=symbol)
                 elif floor_raised:
                     # Update existing Alpaca GTC stop order with new floor
                     updated = self._executor.update_stop_loss(

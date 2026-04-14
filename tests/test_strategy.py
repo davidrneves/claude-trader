@@ -83,6 +83,20 @@ class TestShouldBuy:
         prices = [10.0, 11.0, 12.0, 13.0, 14.0]
         assert strategy.should_buy("AAPL", 5.0, prices) is False
 
+    def test_no_buy_above_ema_without_crossover(self):
+        """Price already above EMA for multiple days - no fresh crossover, no buy."""
+        strategy = EMAMomentumStrategy(ema_period=3)
+        # Steadily rising prices - price has been above EMA for a while
+        prices = [10.0, 11.0, 12.0, 13.0, 14.0]
+        analysis = MultiAgentAnalysis(
+            symbol="AAPL",
+            combined_score=0.8,
+            final_signal=Signal.STRONG_BUY,
+            agreement_count=4,
+            reasoning="test",
+        )
+        assert strategy.should_buy("AAPL", 14.0, prices, analysis) is False
+
     def test_no_buy_low_sentiment(self):
         """Even with EMA crossover, low sentiment blocks buy."""
         strategy = EMAMomentumStrategy(ema_period=3)

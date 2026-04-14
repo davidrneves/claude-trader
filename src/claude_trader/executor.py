@@ -8,8 +8,9 @@ from decimal import Decimal
 
 import structlog
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+from alpaca.trading.enums import OrderClass, OrderSide, OrderType, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
+    GetOrdersRequest,
     MarketOrderRequest,
     StopLossRequest,
     StopOrderRequest,
@@ -64,6 +65,26 @@ class AlpacaExecutor:
             }
             for p in positions
         ]
+
+    def get_open_stop_orders(self, symbol: str) -> list[dict]:
+        """Get open stop/stop_limit sell orders for a symbol."""
+        try:
+            orders = self._client.get_orders(
+                GetOrdersRequest(
+                    symbols=[symbol],
+                    side=OrderSide.SELL,
+                    status=QueryOrderStatus.OPEN,
+                )
+            )
+            return [
+                {"order_id": str(o.id), "stop_price": float(o.stop_price)}
+                for o in orders
+                if o.order_type in (OrderType.STOP, OrderType.STOP_LIMIT)
+                and o.stop_price is not None
+            ]
+        except Exception as e:
+            log.warning("get_stop_orders_failed", symbol=symbol, error=str(e))
+            return []
 
     def _submit_market_order(self, symbol: str, qty: int, side: OrderSide):
         """Submit a market order, return the order object."""

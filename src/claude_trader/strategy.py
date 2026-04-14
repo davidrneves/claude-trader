@@ -63,6 +63,12 @@ class EMAMomentumStrategy:
         price_above_ema = current_price > current_ema
 
         if not price_above_ema:
+            log.debug(
+                "strategy_skip_below_ema",
+                symbol=symbol,
+                price=current_price,
+                ema=round(current_ema, 2),
+            )
             return False
 
         # Check if price just crossed above EMA (wasn't above yesterday)
@@ -74,6 +80,12 @@ class EMAMomentumStrategy:
             just_crossed = price_above_ema
 
         if not just_crossed:
+            log.debug(
+                "strategy_skip_no_crossover",
+                symbol=symbol,
+                price=current_price,
+                ema=round(current_ema, 2),
+            )
             return False
 
         # Require positive sentiment from analysis

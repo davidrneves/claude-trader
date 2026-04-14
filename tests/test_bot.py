@@ -346,6 +346,66 @@ class TestTrailingStops:
         assert "AAPL" not in bot._trailing_stops
         bot._executor.cancel_stop_loss.assert_called_once_with("stop-1")
 
+    def test_adopts_existing_stop_order(self, bot):
+        """When a stop order already exists in Alpaca, adopt it instead of creating a new one."""
+        bot._trailing_stops["AAPL"] = {
+            "floor": Decimal("92"),
+            "stop_order_id": None,
+        }
+        bot._risk.calculate_trailing_stop = MagicMock(return_value=Decimal("92"))
+        bot._strategy.should_sell = MagicMock(return_value=False)
+        bot._get_price_bars = MagicMock(return_value=([100.0], []))
+        bot._executor.get_open_stop_orders = MagicMock(
+            return_value=[{"order_id": "existing-stop-1", "stop_price": 92.0}]
+        )
+        bot._executor.set_stop_loss = MagicMock()
+
+        positions = [
+            {
+                "symbol": "AAPL",
+                "qty": 2,
+                "avg_entry": Decimal("100"),
+                "current_price": Decimal("100"),
+                "unrealized_pnl": Decimal("0"),
+                "side": "long",
+            }
+        ]
+        summary = {"actions": [], "analyses": [], "trades": []}
+        bot._scan_and_execute_sells(summary, positions)
+
+        assert bot._trailing_stops["AAPL"]["stop_order_id"] == "existing-stop-1"
+        bot._executor.set_stop_loss.assert_not_called()
+
+    def test_creates_stop_when_none_exists(self, bot):
+        """When no stop order exists in Alpaca, create a new one."""
+        bot._trailing_stops["AAPL"] = {
+            "floor": Decimal("92"),
+            "stop_order_id": None,
+        }
+        bot._risk.calculate_trailing_stop = MagicMock(return_value=Decimal("92"))
+        bot._strategy.should_sell = MagicMock(return_value=False)
+        bot._get_price_bars = MagicMock(return_value=([100.0], []))
+        bot._executor.get_open_stop_orders = MagicMock(return_value=[])
+        bot._executor.set_stop_loss = MagicMock(
+            return_value={"stop_order_id": "new-stop-1", "stop_price": 92.0}
+        )
+
+        positions = [
+            {
+                "symbol": "AAPL",
+                "qty": 2,
+                "avg_entry": Decimal("100"),
+                "current_price": Decimal("100"),
+                "unrealized_pnl": Decimal("0"),
+                "side": "long",
+            }
+        ]
+        summary = {"actions": [], "analyses": [], "trades": []}
+        bot._scan_and_execute_sells(summary, positions)
+
+        assert bot._trailing_stops["AAPL"]["stop_order_id"] == "new-stop-1"
+        bot._executor.set_stop_loss.assert_called_once()
+
     def test_buy_initializes_trailing_stop(self, bot):
         bot._is_market_open = MagicMock(return_value=True)
         bot._get_market_time = MagicMock(return_value=time(11, 0))
