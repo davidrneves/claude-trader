@@ -18,12 +18,13 @@
 	<string>/Users/davidneves/Workspace/Personal/claude-trader</string>
 
 	<key>StartCalendarInterval</key>
-	<!-- End-of-day summary (16:15 ET = 21:15 local) -->
+	<!-- End-of-day summary (15:00 ET = 20:00 local) -->
+	<!-- Moved earlier from 21:15 to avoid DarkWake/sleep misses -->
 	<dict>
 		<key>Hour</key>
-		<integer>21</integer>
+		<integer>20</integer>
 		<key>Minute</key>
-		<integer>15</integer>
+		<integer>0</integer>
 	</dict>
 
 	<key>StandardOutPath</key>
