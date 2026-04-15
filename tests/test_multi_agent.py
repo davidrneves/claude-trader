@@ -2,7 +2,10 @@
 
 import pytest
 
+from unittest.mock import patch
+
 from claude_trader.analyst import (
+    Analyst,
     Signal,
     SentimentResult,
     TechnicalResult,
@@ -294,3 +297,40 @@ class TestMultiAgentAnalysisModel:
         )
         assert m.symbol == "AAPL"
         assert m.agreement_count == 4
+
+
+class TestAnalyzeWithFallbackCoercion:
+    """Tests for JSON array -> dict coercion in _analyze_with_fallback."""
+
+    def test_list_response_coerced_to_dict(self):
+        """Gemini returning a JSON array should be unwrapped to first element."""
+        analyst = Analyst(api_key="")
+        analyst._client = True  # truthy so it doesn't short-circuit
+
+        list_data = [
+            {"score": 0.5, "signal": "buy", "reasoning": "ok", "key_factors": []}
+        ]
+        with patch("claude_trader.analyst._call_gemini", return_value=list_data):
+            result = analyst.analyze_sentiment("AAPL", ["headline"])
+        assert result.score == 0.5
+        assert result.signal == Signal.BUY
+
+    def test_empty_list_falls_back(self):
+        """Empty JSON array should fall back to defaults."""
+        analyst = Analyst(api_key="")
+        analyst._client = True
+
+        with patch("claude_trader.analyst._call_gemini", return_value=[]):
+            result = analyst.analyze_sentiment("AAPL", ["headline"])
+        assert result.score == 0.0
+        assert result.signal == Signal.HOLD
+
+    def test_non_dict_non_list_falls_back(self):
+        """Unexpected JSON type (string, number) should fall back to defaults."""
+        analyst = Analyst(api_key="")
+        analyst._client = True
+
+        with patch("claude_trader.analyst._call_gemini", return_value="bad"):
+            result = analyst.analyze_sentiment("AAPL", ["headline"])
+        assert result.score == 0.0
+        assert result.signal == Signal.HOLD

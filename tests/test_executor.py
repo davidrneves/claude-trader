@@ -201,12 +201,15 @@ class TestCancelStopLoss:
 
 
 class FakeStopOrder:
-    def __init__(self, order_id="stop-exist", order_type=None, stop_price=92.0):
-        from alpaca.trading.enums import OrderType
+    def __init__(
+        self, order_id="stop-exist", order_type=None, stop_price=92.0, status=None
+    ):
+        from alpaca.trading.enums import OrderStatus, OrderType
 
         self.id = order_id
         self.order_type = order_type if order_type is not None else OrderType.STOP
         self.stop_price = stop_price
+        self.status = status if status is not None else OrderStatus.NEW
 
 
 class TestGetOpenStopOrders:
@@ -242,6 +245,40 @@ class TestGetOpenStopOrders:
             result = executor.get_open_stop_orders("AAPL")
             assert len(result) == 1
             assert result[0]["order_id"] == "stop-1"
+
+    def test_includes_held_oto_legs(self, risk_manager):
+        """OTO child stop legs have status=HELD and must be detected."""
+        from alpaca.trading.enums import OrderStatus, OrderType
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+            executor._client.get_orders.return_value = [
+                FakeStopOrder("oto-leg-1", OrderType.STOP, 92.0, OrderStatus.HELD),
+            ]
+
+            result = executor.get_open_stop_orders("AAPL")
+            assert len(result) == 1
+            assert result[0]["order_id"] == "oto-leg-1"
+
+    def test_excludes_filled_and_cancelled_stops(self, risk_manager):
+        """Filled and cancelled stops should not be returned."""
+        from alpaca.trading.enums import OrderStatus, OrderType
+        from claude_trader.executor import AlpacaExecutor
+
+        with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
+            executor = AlpacaExecutor.__new__(AlpacaExecutor)
+            executor._client = MagicMock()
+            executor._client.get_orders.return_value = [
+                FakeStopOrder("filled-1", OrderType.STOP, 92.0, OrderStatus.FILLED),
+                FakeStopOrder("cancel-1", OrderType.STOP, 90.0, OrderStatus.CANCELED),
+                FakeStopOrder("active-1", OrderType.STOP, 88.0, OrderStatus.NEW),
+            ]
+
+            result = executor.get_open_stop_orders("AAPL")
+            assert len(result) == 1
+            assert result[0]["order_id"] == "active-1"
 
     def test_returns_empty_on_api_error(self, risk_manager):
         from claude_trader.executor import AlpacaExecutor

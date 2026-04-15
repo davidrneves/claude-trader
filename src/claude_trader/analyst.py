@@ -23,6 +23,7 @@ from tenacity import (
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
+    wait_random,
 )
 
 log = structlog.get_logger()
@@ -216,15 +217,16 @@ def _log_retry(retry_state) -> None:
 
 @retry(
     retry=retry_if_exception_type(GeminiError),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=4),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=2, max=16) + wait_random(0, 2),
     before_sleep=_log_retry,
     reraise=True,
 )
 def _call_gemini(client: genai.Client, prompt: str) -> dict:
     """Make a Gemini API call and parse JSON response.
 
-    Retries up to 3 times on transient errors (connection resets, timeouts).
+    Retries up to 4 times on transient errors (connection resets, timeouts)
+    with exponential backoff (2-16s) plus jitter to avoid thundering herd.
     Does NOT retry parse errors (GeminiParseError) since those won't self-heal.
 
     Raises GeminiError or GeminiParseError on failure.
@@ -268,6 +270,12 @@ class Analyst:
 
         try:
             data = _call_gemini(self._client, prompt_fn())
+            if isinstance(data, list) and data:
+                data = data[0]
+            if not isinstance(data, dict):
+                raise GeminiParseError(
+                    f"Expected JSON object, got {type(data).__name__}"
+                )
             return result_cls(**data)
         except (GeminiError, GeminiParseError) as e:
             log.warning(

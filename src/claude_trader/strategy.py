@@ -71,11 +71,19 @@ class EMAMomentumStrategy:
             )
             return False
 
-        # Check if price just crossed above EMA (wasn't above yesterday)
-        if len(ema_values) >= 2 and len(prices) >= self.ema_period + 1:
-            prev_price = prices[-2]
-            prev_ema = ema_values[-2]
-            just_crossed = prev_price <= prev_ema and current_price > current_ema
+        # Check if price crossed above EMA within the last 5 bars.
+        # ema_values is tail-aligned with prices, so ema[-k] pairs with prices[-k].
+        if len(ema_values) >= 2:
+            just_crossed = False
+            max_transitions = min(5, len(ema_values) - 1)
+            for i in range(1, max_transitions + 1):
+                prev_p = prices[-(i + 1)]
+                prev_e = ema_values[-(i + 1)]
+                curr_p = prices[-i]
+                curr_e = ema_values[-i]
+                if prev_p <= prev_e and curr_p > curr_e:
+                    just_crossed = True
+                    break
         else:
             just_crossed = price_above_ema
 

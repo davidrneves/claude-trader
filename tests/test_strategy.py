@@ -84,10 +84,10 @@ class TestShouldBuy:
         assert strategy.should_buy("AAPL", 5.0, prices) is False
 
     def test_no_buy_above_ema_without_crossover(self):
-        """Price already above EMA for multiple days - no fresh crossover, no buy."""
+        """Price above EMA for >5 bars (beyond lookback) - no buy."""
         strategy = EMAMomentumStrategy(ema_period=3)
-        # Steadily rising prices - price has been above EMA for a while
-        prices = [10.0, 11.0, 12.0, 13.0, 14.0]
+        # Steadily rising for 8 bars - crossover happened well beyond 5-bar lookback
+        prices = [5.0, 6.0, 7.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
         analysis = MultiAgentAnalysis(
             symbol="AAPL",
             combined_score=0.8,
@@ -95,7 +95,35 @@ class TestShouldBuy:
             agreement_count=4,
             reasoning="test",
         )
-        assert strategy.should_buy("AAPL", 14.0, prices, analysis) is False
+        assert strategy.should_buy("AAPL", 16.0, prices, analysis) is False
+
+    def test_buy_on_recent_crossover_within_lookback(self):
+        """Crossover 3 bars ago, price still above EMA - should buy."""
+        strategy = EMAMomentumStrategy(ema_period=3)
+        # EMA(3) starts from index 2. Prices below EMA, then cross 3 bars ago.
+        prices = [10.0, 9.0, 8.0, 7.0, 12.0, 13.0, 14.0]
+        analysis = MultiAgentAnalysis(
+            symbol="AAPL",
+            combined_score=0.5,
+            final_signal=Signal.BUY,
+            agreement_count=3,
+            reasoning="test",
+        )
+        assert strategy.should_buy("AAPL", 14.0, prices, analysis) is True
+
+    def test_no_buy_stale_crossover_beyond_lookback(self):
+        """Crossover 7+ bars ago (beyond 5-bar lookback) - no buy."""
+        strategy = EMAMomentumStrategy(ema_period=3)
+        # Cross happens early, then 7+ bars of steady rise above EMA
+        prices = [10.0, 9.0, 8.0, 7.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0]
+        analysis = MultiAgentAnalysis(
+            symbol="AAPL",
+            combined_score=0.8,
+            final_signal=Signal.STRONG_BUY,
+            agreement_count=4,
+            reasoning="test",
+        )
+        assert strategy.should_buy("AAPL", 18.0, prices, analysis) is False
 
     def test_no_buy_low_sentiment(self):
         """Even with EMA crossover, low sentiment blocks buy."""

@@ -12,6 +12,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass,
     OrderSide,
+    OrderStatus,
     OrderType,
     QueryOrderStatus,
     TimeInForce,
@@ -96,14 +97,30 @@ class AlpacaExecutor:
             for p in positions
         ]
 
+    # Statuses that indicate a stop order is still active (not filled/cancelled).
+    # Includes HELD for OTO child legs and SUSPENDED for halted stocks.
+    _ACTIVE_STOP_STATUSES = {
+        OrderStatus.NEW,
+        OrderStatus.HELD,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_NEW,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.PENDING_REPLACE,
+        OrderStatus.SUSPENDED,
+    }
+
     def get_open_stop_orders(self, symbol: str) -> list[dict]:
-        """Get open stop/stop_limit sell orders for a symbol."""
+        """Get active stop/stop_limit sell orders for a symbol.
+
+        Queries ALL statuses and filters client-side so that OTO child
+        legs (status=HELD) are included alongside standalone stops.
+        """
         try:
             orders = self._client.get_orders(
                 GetOrdersRequest(
                     symbols=[symbol],
                     side=OrderSide.SELL,
-                    status=QueryOrderStatus.OPEN,
+                    status=QueryOrderStatus.ALL,
                 )
             )
             return [
@@ -111,6 +128,7 @@ class AlpacaExecutor:
                 for o in orders
                 if o.order_type in (OrderType.STOP, OrderType.STOP_LIMIT)
                 and o.stop_price is not None
+                and o.status in self._ACTIVE_STOP_STATUSES
             ]
         except Exception as e:
             log.warning("get_stop_orders_failed", symbol=symbol, error=str(e))
