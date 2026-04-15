@@ -263,7 +263,11 @@ class TradingBot:
                     )
 
             # Check EMA sell signal
-            closes, _ = self._get_price_bars(symbol)
+            try:
+                closes, _ = self._get_price_bars(symbol)
+            except Exception as e:
+                log.error("price_bars_failed", symbol=symbol, error=str(e))
+                closes = None
             if not closes:
                 closes = [current_price]
             ema_sell = self._strategy.should_sell(symbol, current_price, closes)

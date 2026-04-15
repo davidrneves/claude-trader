@@ -7,6 +7,7 @@ before reaching the API. No direct trading without risk approval.
 import json
 from decimal import Decimal
 
+import requests.exceptions
 import structlog
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
@@ -27,10 +28,30 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    wait_random,
+)
+
 from claude_trader.config import Settings
 from claude_trader.risk import RiskManager, TradeRequest
 
 log = structlog.get_logger()
+
+_TRANSIENT_ERRORS = (requests.exceptions.ConnectionError, ConnectionError, TimeoutError)
+
+_api_retry = retry(
+    retry=retry_if_exception_type(_TRANSIENT_ERRORS),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8) + wait_random(0, 1),
+    before_sleep=lambda rs: log.warning(
+        "api_retry", attempt=rs.attempt_number, error=str(rs.outcome.exception())
+    ),
+    reraise=True,
+)
 
 
 def _parse_existing_stop_from_error(error_str: str) -> str | None:
@@ -109,11 +130,14 @@ class AlpacaExecutor:
         OrderStatus.SUSPENDED,
     }
 
+    @_api_retry
     def get_open_stop_orders(self, symbol: str) -> list[dict]:
         """Get active stop/stop_limit sell orders for a symbol.
 
         Queries ALL statuses and filters client-side so that OTO child
         legs (status=HELD) are included alongside standalone stops.
+        Retries on transient connection errors to avoid silent failures
+        that cascade into unnecessary stop creation attempts.
         """
         try:
             orders = self._client.get_orders(
@@ -130,6 +154,8 @@ class AlpacaExecutor:
                 and o.stop_price is not None
                 and o.status in self._ACTIVE_STOP_STATUSES
             ]
+        except _TRANSIENT_ERRORS:
+            raise
         except Exception as e:
             log.warning("get_stop_orders_failed", symbol=symbol, error=str(e))
             return []
@@ -170,11 +196,6 @@ class AlpacaExecutor:
             log.error("stop_loss_failed", symbol=symbol, error=error_str)
             existing_id = _parse_existing_stop_from_error(error_str)
             if existing_id:
-                log.info(
-                    "existing_stop_adopted_from_error",
-                    symbol=symbol,
-                    order_id=existing_id,
-                )
                 return {
                     "stop_order_id": existing_id,
                     "stop_price": None,
@@ -281,6 +302,7 @@ class AlpacaExecutor:
         except Exception as e:
             log.warning("cancel_stop_failed", order_id=order_id, error=str(e))
 
+    @_api_retry
     def get_bars(
         self, symbol: str, timeframe: TimeFrame, start: str, end: str | None = None
     ):
