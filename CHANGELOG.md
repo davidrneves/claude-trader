@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-04-15
+
+### Fixed
+
+- Add tenacity-based retry with exponential backoff for `get_open_stop_orders` and `get_bars` to survive transient connection errors
+- Wrap `_get_price_bars` call in sell-signal path so a failure doesn't crash the monitoring loop
+- Move end-of-day summary launchd trigger from 21:15 to 20:00 to avoid DarkWake/sleep misses
+- EMA lookback window, stop order detection, Gemini response parsing and retry
+
 ## [0.7.3] - 2026-04-14
 
 ### Fixed
