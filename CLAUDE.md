@@ -58,3 +58,8 @@ ALL criteria must pass:
 - [ ] Max drawdown < 10%
 - [ ] No circuit breaker in last 7 days
 - [ ] Manual review of all trades
+
+## Citadel Harness
+
+This project uses the [Citadel](https://github.com/SethGammon/Citadel) agent
+orchestration harness. Configuration is in `.claude/harness.json`.

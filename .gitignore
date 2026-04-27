@@ -27,3 +27,10 @@ __pycache__/
 # MemPalace
 entities.json
 mempalace.yaml
+
+# Citadel harness - machine-specific or runtime state
+.claude/settings.json
+.claude/settings.local.json
+.claude/circuit-breaker-state.json
+.citadel/plugin-root.txt
+.planning/

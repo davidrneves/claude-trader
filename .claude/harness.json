@@ -1,0 +1,84 @@
+{
+  "language": "python",
+  "framework": null,
+  "packageManager": "uv",
+  "typecheck": {
+    "command": null,
+    "perFile": false
+  },
+  "test": {
+    "command": "uv run pytest",
+    "framework": "pytest"
+  },
+  "qualityRules": {
+    "builtIn": [
+      "no-confirm-alert",
+      "no-transition-all"
+    ],
+    "custom": []
+  },
+  "protectedFiles": [
+    ".claude/harness.json",
+    ".claude/settings.json"
+  ],
+  "features": {
+    "intakeScanner": true,
+    "telemetry": true
+  },
+  "registeredSkills": [
+    "architect",
+    "archon",
+    "ascii-diagram",
+    "autopilot",
+    "cost",
+    "create-app",
+    "create-skill",
+    "daemon",
+    "dashboard",
+    "design",
+    "do",
+    "doc-gen",
+    "experiment",
+    "fleet",
+    "houseclean",
+    "improve",
+    "infra-audit",
+    "learn",
+    "live-preview",
+    "map",
+    "marshal",
+    "merge-review",
+    "organize",
+    "postmortem",
+    "pr-watch",
+    "prd",
+    "qa",
+    "refactor",
+    "research",
+    "research-fleet",
+    "review",
+    "scaffold",
+    "schedule",
+    "session-handoff",
+    "setup",
+    "systematic-debugging",
+    "test-gen",
+    "triage",
+    "verify",
+    "watch",
+    "web-ui-debug",
+    "wiki",
+    "workspace"
+  ],
+  "registeredSkillCount": 43,
+  "agentTimeouts": {
+    "skill": 600000,
+    "research": 900000,
+    "build": 1800000
+  },
+  "trust": {
+    "sessionCount": 0,
+    "campaignCount": 0,
+    "level": "novice"
+  }
+}
