@@ -5,7 +5,8 @@ before reaching the API. No direct trading without risk approval.
 """
 
 import json
-from decimal import Decimal
+from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 import requests.exceptions
 import structlog
@@ -42,6 +43,26 @@ from claude_trader.risk import RiskManager, TradeRequest
 log = structlog.get_logger()
 
 _TRANSIENT_ERRORS = (requests.exceptions.ConnectionError, ConnectionError, TimeoutError)
+
+# Statuses that indicate a stop order is still active (not filled/cancelled).
+# Includes HELD for OTO child legs and SUSPENDED for halted stocks.
+_ACTIVE_STOP_STATUSES = {
+    OrderStatus.NEW,
+    OrderStatus.HELD,
+    OrderStatus.ACCEPTED,
+    OrderStatus.PENDING_NEW,
+    OrderStatus.PARTIALLY_FILLED,
+    OrderStatus.PENDING_REPLACE,
+    OrderStatus.SUSPENDED,
+}
+
+_CENT = Decimal("0.01")
+
+
+def _quantize_cents(value: Decimal) -> float:
+    """Round a Decimal price to two cents using bankers-safe half-up, return float for API."""
+    return float(value.quantize(_CENT, rounding=ROUND_HALF_UP))
+
 
 _api_retry = retry(
     retry=retry_if_exception_type(_TRANSIENT_ERRORS),
@@ -118,26 +139,15 @@ class AlpacaExecutor:
             for p in positions
         ]
 
-    # Statuses that indicate a stop order is still active (not filled/cancelled).
-    # Includes HELD for OTO child legs and SUSPENDED for halted stocks.
-    _ACTIVE_STOP_STATUSES = {
-        OrderStatus.NEW,
-        OrderStatus.HELD,
-        OrderStatus.ACCEPTED,
-        OrderStatus.PENDING_NEW,
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.PENDING_REPLACE,
-        OrderStatus.SUSPENDED,
-    }
-
     @_api_retry
-    def get_open_stop_orders(self, symbol: str) -> list[dict]:
+    def get_open_stop_orders(self, symbol: str) -> list[dict] | None:
         """Get active stop/stop_limit sell orders for a symbol.
 
         Queries ALL statuses and filters client-side so that OTO child
         legs (status=HELD) are included alongside standalone stops.
-        Retries on transient connection errors to avoid silent failures
-        that cascade into unnecessary stop creation attempts.
+        Retries on transient connection errors. Returns ``None`` when the
+        lookup fails for a non-transient reason so callers do not mistake
+        a failed query for "no stops exist" and create a duplicate.
         """
         try:
             orders = self._client.get_orders(
@@ -152,13 +162,13 @@ class AlpacaExecutor:
                 for o in orders
                 if o.order_type in (OrderType.STOP, OrderType.STOP_LIMIT)
                 and o.stop_price is not None
-                and o.status in self._ACTIVE_STOP_STATUSES
+                and o.status in _ACTIVE_STOP_STATUSES
             ]
         except _TRANSIENT_ERRORS:
             raise
         except Exception as e:
             log.warning("get_stop_orders_failed", symbol=symbol, error=str(e))
-            return []
+            return None
 
     def _submit_market_order(self, symbol: str, qty: int, side: OrderSide):
         """Submit a market order, return the order object."""
@@ -178,7 +188,7 @@ class AlpacaExecutor:
         stop order, returns the existing order ID with ``adopted=True``
         so the caller can track it instead of giving up.
         """
-        stop_price = round(float(self._risk.calculate_stop_loss(entry_price)), 2)
+        stop_price = _quantize_cents(self._risk.calculate_stop_loss(entry_price))
         try:
             stop_order = self._client.submit_order(
                 StopOrderRequest(
@@ -208,7 +218,7 @@ class AlpacaExecutor:
         symbol: str,
         price: Decimal,
         qty: int | None = None,
-        market_time=None,
+        market_time: datetime | None = None,
     ) -> dict | None:
         """Buy shares with automatic stop-loss via OTO order.
 
@@ -229,7 +239,7 @@ class AlpacaExecutor:
             log.warning("buy_rejected_risk", symbol=symbol, reason=check.reason)
             return None
 
-        stop_price = round(float(self._risk.calculate_stop_loss(price)), 2)
+        stop_price = _quantize_cents(self._risk.calculate_stop_loss(price))
         order = self._client.submit_order(
             MarketOrderRequest(
                 symbol=symbol,
@@ -269,15 +279,24 @@ class AlpacaExecutor:
     def update_stop_loss(
         self, symbol: str, qty: int, new_stop_price: Decimal, old_order_id: str
     ) -> dict | None:
-        """Replace a GTC stop-loss order with updated trailing stop price."""
+        """Replace a GTC stop-loss order with updated trailing stop price.
+
+        If the cancel of the old order fails, do not submit a replacement -
+        the old order may still hold the shares, and a second stop submit
+        would be rejected as a wash trade. The next bot tick will retry.
+        """
         try:
             self._client.cancel_order_by_id(old_order_id)
         except Exception as e:
             log.warning(
-                "cancel_stop_failed", symbol=symbol, order_id=old_order_id, error=str(e)
+                "cancel_stop_failed_skip_update",
+                symbol=symbol,
+                order_id=old_order_id,
+                error=str(e),
             )
+            return None
 
-        stop_price = round(float(new_stop_price), 2)
+        stop_price = _quantize_cents(new_stop_price)
         try:
             stop_order = self._client.submit_order(
                 StopOrderRequest(
@@ -326,7 +345,7 @@ def df_to_bar_dicts(df, window: int | None = None) -> list[dict]:
         df: pandas DataFrame with OHLCV columns.
         window: if set, only return the last N bars.
     """
-    subset = df.iloc[-window:] if window else df
+    subset = df.iloc[-window:] if window is not None and window > 0 else df
     bars = []
     for idx, row in subset.iterrows():
         # Alpaca returns MultiIndex (symbol, timestamp) for single-symbol queries

@@ -160,7 +160,9 @@ class TestUpdateStopLoss:
             assert result["stop_order_id"] == "stop-new"
             assert result["stop_price"] == 104.5
 
-    def test_update_handles_cancel_failure(self, risk_manager):
+    def test_update_skips_replacement_when_cancel_fails(self, risk_manager):
+        """If cancel fails, do not submit a replacement: the old order may
+        still hold the shares, and a duplicate stop would be wash-rejected."""
         from claude_trader.executor import AlpacaExecutor
 
         with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
@@ -173,8 +175,9 @@ class TestUpdateStopLoss:
             result = executor.update_stop_loss(
                 "AAPL", 10, Decimal("104.50"), "stop-old"
             )
-            assert result is not None
-            assert result["stop_order_id"] == "stop-new"
+            executor._client.cancel_order_by_id.assert_called_once_with("stop-old")
+            executor._client.submit_order.assert_not_called()
+            assert result is None
 
 
 class TestCancelStopLoss:
@@ -280,7 +283,10 @@ class TestGetOpenStopOrders:
             assert len(result) == 1
             assert result[0]["order_id"] == "active-1"
 
-    def test_returns_empty_on_api_error(self, risk_manager):
+    def test_returns_none_on_api_error(self, risk_manager):
+        """Non-transient API errors must return None, not [], so callers
+        do not mistake a failed lookup for "no stops exist" and create a
+        duplicate."""
         from claude_trader.executor import AlpacaExecutor
 
         with patch.object(AlpacaExecutor, "__init__", lambda self, *a, **kw: None):
@@ -289,4 +295,4 @@ class TestGetOpenStopOrders:
             executor._client.get_orders.side_effect = Exception("API error")
 
             result = executor.get_open_stop_orders("AAPL")
-            assert result == []
+            assert result is None

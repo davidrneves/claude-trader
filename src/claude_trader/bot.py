@@ -167,6 +167,11 @@ class TradingBot:
                 entry_price, current_price, None
             )
             existing = self._executor.get_open_stop_orders(symbol)
+            if existing is None:
+                # Lookup failed; defer reconciliation to the next tick rather
+                # than guess "no stop exists" and risk creating a duplicate.
+                log.warning("position_reconcile_deferred", symbol=symbol)
+                continue
             stop_order_id = existing[0]["order_id"] if existing else None
             self._trailing_stops[symbol] = {
                 "floor": initial_floor,
@@ -202,7 +207,11 @@ class TradingBot:
                     # No tracked stop - check if one already exists in Alpaca
                     # (e.g. from a previous OTO buy whose leg wasn't recorded).
                     existing = self._executor.get_open_stop_orders(symbol)
-                    if existing:
+                    if existing is None:
+                        # Lookup failed; skip create/adopt to avoid duplicating
+                        # a stop we just couldn't see. Retry next tick.
+                        log.warning("stop_create_deferred_lookup_failed", symbol=symbol)
+                    elif existing:
                         stored["stop_order_id"] = existing[0]["order_id"]
                         stored.pop("stop_fail_count", None)
                         stored.pop("stop_last_attempt", None)
