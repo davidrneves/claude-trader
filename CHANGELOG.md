@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-04-27
+
+### Fixed
+
+- `get_open_stop_orders` returns `None` (instead of `[]`) on non-transient lookup failure so callers don't mistake a failed query for "no stops exist" and create a duplicate stop. Both `bot.py` callsites now defer reconciliation when the lookup result is unknown.
+- `update_stop_loss` no longer submits a replacement when the cancel of the old order raised; the old order may still hold the shares and a duplicate stop would be wash-rejected. The next bot tick retries.
+- All stop-price rounding now uses `Decimal.quantize(ROUND_HALF_UP)` via a single `_quantize_cents` helper, avoiding binary float rounding edge cases hit by `round(float(decimal), 2)`.
+- `df_to_bar_dicts` now treats `window=0` explicitly instead of falling through to "return full DataFrame".
+
+### Changed
+
+- Refresh dependency lockfile via `uv lock --upgrade` (alpaca-py 0.43.2 → 0.43.3, google-genai 1.71.0 → 1.73.1, pydantic 2.12.5 → 2.13.3, cryptography 46.0.7 → 47.0.0, ruff 0.15.10 → 0.15.12 plus transitive bumps).
+- Bootstrap Citadel agent harness configuration (`.claude/harness.json`, `.citadel/project.md`, `AGENTS.md`, `.mcp.json`) and gitignore machine-specific harness state.
+
 ## [0.7.4] - 2026-04-15
 
 ### Fixed
