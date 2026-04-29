@@ -23,6 +23,7 @@ from claude_trader.analyst import Analyst, MultiAgentAnalysis, Signal
 from claude_trader.config import Settings
 from claude_trader.constants import ET, MARKET_CLOSE, MARKET_OPEN
 from claude_trader.executor import AlpacaExecutor, df_to_bar_dicts
+from claude_trader.insider import InsiderFeed
 from claude_trader.logger import TradeLogger
 from claude_trader.news import NewsFeed
 from claude_trader.notifier import TelegramNotifier
@@ -71,6 +72,14 @@ class TradingBot:
         self._logger = TradeLogger(settings.trades_log_path)
         self._news = NewsFeed(
             api_key=settings.alpaca_api_key, secret_key=settings.alpaca_secret_key
+        )
+        self._insider: InsiderFeed | None = (
+            InsiderFeed(
+                user_agent=settings.insider_user_agent,
+                cache_dir=settings.insider_cache_dir,
+            )
+            if settings.insider_agent_enabled
+            else None
         )
         self._telegram = TelegramNotifier(
             bot_token=settings.telegram_bot_token,
@@ -316,10 +325,14 @@ class TradingBot:
             return None
 
         headlines = self._news.get_headlines(symbol, limit=10)
+        insider_signals = (
+            self._insider.get_full_signals(symbol) if self._insider else None
+        )
         return self._analyst.full_analysis(
             symbol=symbol,
             headlines=headlines,
             prices=ohlcv,
+            insider_signals=insider_signals,
         )
 
     def _scan_and_execute_buys(

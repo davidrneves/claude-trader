@@ -83,6 +83,27 @@ class Settings(BaseSettings):
         description="Obsidian vault path for daily trade logs",
     )
 
+    # --- Insider / SEC signals ---
+    insider_agent_enabled: bool = Field(
+        default=False,
+        description=(
+            "Fetch openinsider/SEC signals and apply +/-0.1 gate bonus to "
+            "the analyst composite. Default off - opt in per deployment."
+        ),
+    )
+    insider_user_agent: str = Field(
+        default="",
+        description=(
+            "User-Agent for openinsider scraping and SEC fetches. SEC EDGAR "
+            "requires a real contact email; placeholder values get rate-limited "
+            "or blocked. Required (no default) when insider_agent_enabled=True."
+        ),
+    )
+    insider_cache_dir: Path = Field(
+        default=Path(".state/insider_cache"),
+        description="Directory for openinsider/SEC response cache.",
+    )
+
     # --- Scheduler ---
     cycle_interval_minutes: int = Field(
         default=15, description="Minutes between trading cycles"

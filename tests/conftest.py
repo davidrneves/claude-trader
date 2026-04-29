@@ -31,4 +31,7 @@ def mock_settings():
     settings.snapshots_path = MagicMock()
     settings.state_path = Path("/tmp/test_bot_state.json")
     settings.watchlist = ["AAPL", "MSFT"]
+    settings.insider_agent_enabled = False
+    settings.insider_user_agent = "claude-trader-tests/0.0 (ci@anthropic.test)"
+    settings.insider_cache_dir = Path("/tmp/test_insider_cache")
     return settings

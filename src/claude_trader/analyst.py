@@ -84,17 +84,41 @@ class DebateResult(BaseModel):
     bear_argument: str
 
 
+class InsiderResult(BaseModel):
+    """Rule-based aggregation of openinsider + SEC filing signals.
+
+    Score is a deterministic mapping from signal counts/thresholds, not an
+    LLM call - the underlying data is structured and noisy LLM scoring would
+    just add latency and variance.
+    """
+
+    score: float = Field(ge=-1.0, le=1.0, description="-1 bearish to +1 bullish")
+    signals_seen: dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-signal count of qualifying events. None values omitted.",
+    )
+    signals_unknown: list[str] = Field(
+        default_factory=list,
+        description="Signals whose fetch failed - excluded from scoring.",
+    )
+    reasoning: str = ""
+
+
 class MultiAgentAnalysis(BaseModel):
     symbol: str
     sentiment: SentimentResult | None = None
     technical: TechnicalResult | None = None
     fundamental: FundamentalResult | None = None
     debate: DebateResult | None = None
+    insider: InsiderResult | None = None
     combined_score: float = Field(ge=-1.0, le=1.0)
     final_signal: Signal
     agreement_count: int = Field(description="How many agents agree on direction")
     contrarian_signal: bool = Field(
         default=False, description="True if contrarian filter triggered"
+    )
+    insider_bonus: float = Field(
+        default=0.0, description="Gate-bonus applied from insider signals"
     )
     reasoning: str
 
@@ -132,6 +156,7 @@ class SignalAggregator:
         technical: TechnicalResult,
         fundamental: FundamentalResult,
         debate: DebateResult,
+        insider: InsiderResult | None = None,
     ) -> MultiAgentAnalysis:
         weighted_score = (
             sentiment.score * self.sentiment_weight
@@ -151,6 +176,15 @@ class SignalAggregator:
                 sentiment=sentiment.score,
                 technical=technical.score,
             )
+
+        # Insider gate-bonus: max +/-0.1 nudge so insider data can break ties
+        # but cannot dominate the sentiment+technical+fundamental composite.
+        # Sign follows insider.score, magnitude scales linearly. Skipped
+        # entirely when insider is None (feature flag off or fetcher disabled).
+        insider_bonus = 0.0
+        if insider is not None:
+            insider_bonus = max(-0.1, min(0.1, insider.score * 0.1))
+            combined = combined + insider_bonus
 
         combined = max(-1.0, min(1.0, combined))
 
@@ -189,6 +223,10 @@ class SignalAggregator:
             reasoning_parts.append(
                 "CONTRARIAN: negative sentiment + positive technical"
             )
+        if insider is not None and insider_bonus != 0.0:
+            reasoning_parts.append(
+                f"Insider: {insider.score:+.2f} (bonus {insider_bonus:+.2f})"
+            )
 
         return MultiAgentAnalysis(
             symbol=symbol,
@@ -196,10 +234,12 @@ class SignalAggregator:
             technical=technical,
             fundamental=fundamental,
             debate=debate,
+            insider=insider,
             combined_score=round(combined, 3),
             final_signal=final_signal,
             agreement_count=agreement_count,
             contrarian_signal=contrarian,
+            insider_bonus=round(insider_bonus, 3),
             reasoning=" | ".join(reasoning_parts),
         )
 
@@ -422,18 +462,131 @@ Return a JSON object:
             symbol, prompt, DebateResult, fallback, "debate"
         )
 
+    def analyze_insider(
+        self, symbol: str, signals: dict | None
+    ) -> InsiderResult:
+        """Score insider/SEC signals deterministically into a [-1, +1] composite.
+
+        Inputs are the per-signal results from ``InsiderFeed.get_full_signals``:
+        each value is a list of qualifying events or ``None`` (fetch failure).
+        Failed fetches are recorded in ``signals_unknown`` and excluded from
+        scoring - they are treated as absence of information, not as bullish
+        or bearish.
+
+        Scoring rules (all magnitudes chosen so a single positive cluster buy
+        is ~+0.4 and a single dilution + late filing is ~-0.6, leaving room
+        for compound effects without saturating):
+        - cluster_buys with insider_count >= 3:   +0.4 each (cap +0.8)
+        - officer_buys (CEO/CFO/Dir/10%/Pres):    +0.2 each (cap +0.6)
+        - dilution filings within window:         -0.3 each (cap -0.6)
+        - late filings (NT 10-K/Q):               -0.5 each (cap -0.8)
+        - failures_to_deliver: aggregate qty in last published period
+            >  500,000 shares: -0.3
+            > 5,000,000 shares: -0.6 (cap)
+        Final score is clamped to [-1.0, +1.0].
+        """
+        if signals is None:
+            return InsiderResult(
+                score=0.0,
+                signals_unknown=["all"],
+                reasoning="Insider feed unavailable",
+            )
+
+        score = 0.0
+        seen: dict[str, int] = {}
+        unknown: list[str] = []
+        parts: list[str] = []
+
+        cluster = signals.get("cluster_buys")
+        if cluster is None:
+            unknown.append("cluster_buys")
+        else:
+            qualifying = [c for c in cluster if (c.get("insider_count") or 0) >= 3]
+            seen["cluster_buys"] = len(qualifying)
+            bonus = min(0.8, 0.4 * len(qualifying))
+            if bonus:
+                score += bonus
+                parts.append(f"cluster_buys={len(qualifying)} (+{bonus:.2f})")
+
+        officer = signals.get("officer_buys")
+        if officer is None:
+            unknown.append("officer_buys")
+        else:
+            seen["officer_buys"] = len(officer)
+            bonus = min(0.6, 0.2 * len(officer))
+            if bonus:
+                score += bonus
+                parts.append(f"officer_buys={len(officer)} (+{bonus:.2f})")
+
+        dilution = signals.get("dilution_filings")
+        if dilution is None:
+            unknown.append("dilution_filings")
+        else:
+            seen["dilution_filings"] = len(dilution)
+            penalty = max(-0.6, -0.3 * len(dilution))
+            if penalty:
+                score += penalty
+                parts.append(f"dilution_filings={len(dilution)} ({penalty:+.2f})")
+
+        late = signals.get("late_filings")
+        if late is None:
+            unknown.append("late_filings")
+        else:
+            seen["late_filings"] = len(late)
+            penalty = max(-0.8, -0.5 * len(late))
+            if penalty:
+                score += penalty
+                parts.append(f"late_filings={len(late)} ({penalty:+.2f})")
+
+        ftds = signals.get("failures_to_deliver")
+        if ftds is None:
+            unknown.append("failures_to_deliver")
+        else:
+            seen["failures_to_deliver"] = len(ftds)
+            total_qty = sum((r.get("qty") or 0) for r in ftds)
+            ftd_penalty = 0.0
+            if total_qty > 5_000_000:
+                ftd_penalty = -0.6
+            elif total_qty > 500_000:
+                ftd_penalty = -0.3
+            if ftd_penalty:
+                score += ftd_penalty
+                parts.append(f"ftd_qty={total_qty} ({ftd_penalty:+.2f})")
+
+        score = max(-1.0, min(1.0, score))
+        reasoning = "; ".join(parts) if parts else "no qualifying insider signals"
+        if unknown:
+            reasoning += f" | unknown: {','.join(unknown)}"
+
+        return InsiderResult(
+            score=round(score, 3),
+            signals_seen=seen,
+            signals_unknown=unknown,
+            reasoning=reasoning,
+        )
+
     def full_analysis(
         self,
         symbol: str,
         headlines: list[str] | None = None,
         prices: list[dict] | None = None,
         financials: dict | None = None,
+        insider_signals: dict | None = None,
     ) -> MultiAgentAnalysis:
-        """Run the full multi-agent pipeline: 3 analysts + debate + aggregation."""
+        """Run the full multi-agent pipeline: 3 analysts + debate + aggregation.
+
+        ``insider_signals`` is the raw output of ``InsiderFeed.get_full_signals``
+        when the insider feature flag is enabled, otherwise None.
+        """
         sentiment = self.analyze_sentiment(symbol, headlines or [])
         technical = self.analyze_technical(symbol, prices or [])
         fundamental = self.analyze_fundamental(symbol, financials)
         debate = self.run_debate(symbol, sentiment, technical, fundamental)
+        insider = (
+            self.analyze_insider(symbol, insider_signals)
+            if insider_signals is not None
+            else None
+        )
 
         result = self._aggregator.aggregate(
             symbol=symbol,
@@ -441,6 +594,7 @@ Return a JSON object:
             technical=technical,
             fundamental=fundamental,
             debate=debate,
+            insider=insider,
         )
 
         log.info(
@@ -450,5 +604,6 @@ Return a JSON object:
             combined_score=result.combined_score,
             agreement=result.agreement_count,
             contrarian=result.contrarian_signal,
+            insider_bonus=result.insider_bonus,
         )
         return result
