@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-29
+
+### Added
+
+- Insider/SEC signal feed (`InsiderFeed`) with five fetchers, default-off behind `insider_agent_enabled`:
+  - `cluster_buys` (openinsider /latest-cluster-buys, 14d window)
+  - `officer_buys` (openinsider /officer-purchases-25k, CEO/CFO/Director/10% titles only)
+  - `dilution_filings` (SEC submissions JSON; S-1, S-3, 424B5, F-1, F-3 within 30d)
+  - `late_filings` (SEC submissions JSON; NT 10-K, NT 10-Q within 14d)
+  - `failures_to_deliver` (SEC bi-monthly fails-to-deliver pipe-delimited CSVs)
+- `InsiderResult` model + `Analyst.analyze_insider` rule-based scorer; integrated as a `+/-0.1` gate-bonus on the SignalAggregator composite (does NOT change the 40/60 sentiment/technical weights).
+- Failed fetches surface as `None` rather than `[]` so the scorer never mistakes a network error for "no events" (pattern mirrored from the recent `get_open_stop_orders` fix).
+- File-cache layer at `.state/insider_cache/` with per-signal TTLs (6h openinsider, 24h SEC submissions, 14d FTD zips), required because launchd spawns the bot per-tick.
+- `InsiderFeed.__init__` rejects empty/placeholder User-Agents at construction; SEC EDGAR access policy requires a real contact email.
+
+### Changed
+
+- `requests` is now an explicit project dependency (was transitive via google-genai/alpaca-py).
+
 ## [0.7.5] - 2026-04-27
 
 ### Fixed
