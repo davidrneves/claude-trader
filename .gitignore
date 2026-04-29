@@ -30,11 +30,7 @@ entities.json
 mempalace.yaml
 
 # Citadel harness - machine-specific or runtime state
-.claude/settings.json
-.claude/settings.local.json
-.claude/circuit-breaker-state.json
-.claude/agent-context/
-.claude/compact-state.json
+.claude/
 .citadel/plugin-root.txt
 .citadel/scripts/
 .citadel/version.txt
